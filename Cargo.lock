@@ -1290,6 +1290,7 @@ dependencies = [
  "futures",
  "observability_deps",
  "pin-project",
+ "schema",
  "tokio",
  "tokio-stream",
  "workspace-hack",

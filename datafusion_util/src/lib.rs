@@ -4,11 +4,13 @@
 pub mod watch;
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use datafusion::arrow::array::BooleanArray;
 use datafusion::arrow::compute::filter_record_batch;
+use datafusion::arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
 use datafusion::datasource::MemTable;
 use datafusion::execution::context::TaskContext;
@@ -238,7 +240,20 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.inner.poll_next_unpin(cx)
+        match self.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(r)) => Poll::Ready(Some(r)),
+            Poll::Ready(None) => {
+                if let Some(handle) = self.join_handle.as_ref() {
+                    if handle.died() {
+                        return Poll::Ready(Some(Err(ArrowError::ExternalError(
+                            String::from("AdapterStream task died").into(),
+                        ))));
+                    }
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 
@@ -351,18 +366,41 @@ pub fn context_with_table(batch: RecordBatch) -> SessionContext {
 /// A [`JoinHandle`] that is aborted on drop.
 #[pin_project(PinnedDrop)]
 #[derive(Debug)]
-pub struct AutoAbortJoinHandle<T>(#[pin] JoinHandle<T>);
+pub struct AutoAbortJoinHandle<T> {
+    #[pin]
+    handle: JoinHandle<T>,
+    died: Arc<AtomicBool>,
+}
 
-impl<T> AutoAbortJoinHandle<T> {
+impl<T> AutoAbortJoinHandle<T>
+where
+    T: Send + 'static,
+{
     pub fn new(handle: JoinHandle<T>) -> Self {
-        Self(handle)
+        let died = Arc::new(AtomicBool::new(false));
+        let died_captured = Arc::clone(&died);
+        let handle = tokio::task::spawn(async move {
+            match handle.await {
+                Ok(res) => res,
+                Err(e) => {
+                    died_captured.store(true, Ordering::SeqCst);
+                    panic!("Background task died: {e}");
+                }
+            }
+        });
+
+        Self { handle, died }
+    }
+
+    fn died(&self) -> bool {
+        self.died.load(Ordering::SeqCst)
     }
 }
 
 #[pinned_drop]
 impl<T> PinnedDrop for AutoAbortJoinHandle<T> {
     fn drop(self: Pin<&mut Self>) {
-        self.0.abort();
+        self.handle.abort();
     }
 }
 
@@ -371,12 +409,14 @@ impl<T> Future for AutoAbortJoinHandle<T> {
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        this.0.poll(cx)
+        this.handle.poll(cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use schema::builder::SchemaBuilder;
+
     use super::*;
 
     #[test]
@@ -389,5 +429,20 @@ mod tests {
         let actual_string = format!("{:?}", ts_predicate_expr);
 
         assert_eq!(actual_string, expected_string);
+    }
+
+    #[tokio::test]
+    async fn test_adapter_stream_panic_handling() {
+        let schema = SchemaBuilder::new().timestamp().build().unwrap().as_arrow();
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let join_handle = tokio::task::spawn(async {
+            let _tx = tx;
+            panic!("epic fail")
+        });
+        let join_handle = Some(Arc::new(AutoAbortJoinHandle::new(join_handle)));
+        let stream = AdapterStream::adapt(schema, rx, join_handle);
+        datafusion::physical_plan::common::collect(stream)
+            .await
+            .unwrap_err();
     }
 }
