@@ -23,7 +23,7 @@ use iox_query::{
     QueryChunk,
 };
 use iox_time::TimeProvider;
-use metric::{Attributes, DurationHistogram, Metric, U64Counter, U64Gauge};
+use metric::{Attributes, DurationHistogram, Metric, U64Counter, U64Gauge, DurationHistogramOptions, DURATION_MAX};
 use observability_deps::tracing::{debug, info, trace, warn};
 use parquet_file::{metadata::IoxMetadata, storage::ParquetStorage};
 use schema::Schema;
@@ -33,6 +33,8 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ops::DerefMut,
     sync::Arc,
+    time::Duration,
+    
 };
 use uuid::Uuid;
 
@@ -247,9 +249,24 @@ impl Compactor {
             "Counter for level promotion from 0 to 1",
         );
 
-        let compaction_duration: Metric<DurationHistogram> = registry.register_metric(
+        let compaction_duration_buckets_ms =
+            || DurationHistogramOptions::new(
+                vec![
+                    Duration::from_millis(100),
+                    Duration::from_millis(1000),
+                    Duration::from_millis(5000),
+                    Duration::from_millis(10000),
+                    Duration::from_millis(30000),
+                    Duration::from_millis(60000),
+                    Duration::from_millis(360000),
+                    DURATION_MAX,
+                ],
+            );
+
+        let compaction_duration: Metric<DurationHistogram> = registry.register_metric_with_options(
             "compactor_compact_partition_duration",
             "Compact partition duration",
+            compaction_duration_buckets_ms
         );
 
         Self {

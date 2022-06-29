@@ -22,7 +22,7 @@ use generated_types::ingester::IngesterQueryRequest;
 use iox_catalog::interface::Catalog;
 use iox_query::exec::Executor;
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{DurationHistogram, Metric, U64Counter};
+use metric::{DurationHistogram, Metric, U64Counter, DurationHistogramOptions, DURATION_MAX};
 use object_store::DynObjectStore;
 use observability_deps::tracing::*;
 use snafu::{ResultExt, Snafu};
@@ -253,9 +253,28 @@ impl IngestHandlerImpl {
         }
 
         // Record query duration metrics, broken down by query execution result
-        let query_duration: Metric<DurationHistogram> = metric_registry.register_metric(
+        let query_duration: Metric<DurationHistogram> = metric_registry.register_metric_with_options(
             "ingester_flight_query_duration",
             "flight request query execution duration",
+            || {
+                DurationHistogramOptions::new(
+                    vec![
+                    Duration::from_millis(5),
+                    Duration::from_millis(10),
+                    Duration::from_millis(20),
+                    Duration::from_millis(40),
+                    Duration::from_millis(80),
+                    Duration::from_millis(160),
+                    Duration::from_millis(320),
+                    Duration::from_millis(640),
+                    Duration::from_millis(1280),
+                    Duration::from_millis(2560),
+                    Duration::from_millis(5120),
+                    Duration::from_millis(10240),
+                    Duration::from_millis(20480),
+                    DURATION_MAX,
+                ])
+            },
         );
         let query_duration_success = query_duration.recorder(&[("result", "success")]);
         let query_duration_error_not_found =

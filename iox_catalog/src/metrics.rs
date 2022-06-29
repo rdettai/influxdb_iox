@@ -13,8 +13,8 @@ use data_types::{
     SequencerId, Table, TableId, TablePartition, Timestamp, Tombstone, TombstoneId,
 };
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{DurationHistogram, Metric};
-use std::{fmt::Debug, sync::Arc};
+use metric::{DurationHistogram, Metric, DurationHistogramOptions, DURATION_MAX};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 /// Decorates a implementation of the catalog's [`RepoCollection`] (and the
@@ -149,9 +149,27 @@ macro_rules! decorate {
 
             $(
                 async fn $method(&mut self, $($arg : $t),*) -> Result<$out> {
-                    let observer: Metric<DurationHistogram> = self.metrics.register_metric(
+                    let buckets = || {
+                        DurationHistogramOptions::new(
+                            vec![
+                            Duration::from_millis(5),
+                            Duration::from_millis(10),
+                            Duration::from_millis(20),
+                            Duration::from_millis(40),
+                            Duration::from_millis(80),
+                            Duration::from_millis(160),
+                            Duration::from_millis(320),
+                            Duration::from_millis(640),
+                            Duration::from_millis(1280),
+                            Duration::from_millis(2560),
+                            Duration::from_millis(5120),
+                            DURATION_MAX,
+                        ])
+                    };
+                    let observer: Metric<DurationHistogram> = self.metrics.register_metric_with_options(
                         "catalog_op_duration",
                         "catalog call duration",
+                        buckets
                     );
 
                     let t = self.time_provider.now();

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use data_types::KafkaPartition;
 use dml::DmlOperation;
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{Attributes, DurationHistogram, U64Counter, U64Gauge};
-use std::fmt::Debug;
+use metric::{Attributes, DurationHistogram, U64Counter, U64Gauge, DurationHistogramOptions, DURATION_MAX, Metric};
+use std::{fmt::Debug, time::Duration};
 use trace::span::SpanRecorder;
 
 /// A [`WatermarkFetcher`] abstracts a source of the write buffer high watermark
@@ -111,9 +111,29 @@ where
             )
             .recorder(attr.clone());
 
-        let op_apply = metrics.register_metric::<DurationHistogram>(
+        // The buckets for the op apply histogram
+        let buckets = || {
+            DurationHistogramOptions::new(vec![
+                Duration::from_millis(5),
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+                Duration::from_millis(40),
+                Duration::from_millis(80),
+                Duration::from_millis(160),
+                Duration::from_millis(320),
+                Duration::from_millis(640),
+                Duration::from_millis(1280),
+                Duration::from_millis(2560),
+                Duration::from_millis(5120),
+                Duration::from_millis(10240),
+                Duration::from_millis(20480),
+                DURATION_MAX,
+            ])
+        };
+        let op_apply: Metric<DurationHistogram> = metrics.register_metric_with_options(
             "ingester_op_apply_duration",
             "The duration of time taken to process an operation read from the sequencer",
+            buckets,
         );
         let op_apply_success = op_apply.recorder({
             let mut attr = attr.clone();

@@ -2,8 +2,8 @@
 
 use dml::{DmlMeta, DmlOperation};
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{DurationHistogram, Metric};
-use std::{borrow::Cow, hash::Hash, sync::Arc};
+use metric::{DurationHistogram, Metric, DurationHistogramOptions, DURATION_MAX};
+use std::{borrow::Cow, hash::Hash, sync::Arc, time::Duration};
 use write_buffer::core::{WriteBufferError, WriteBufferWriting};
 
 /// A sequencer tags an write buffer with a sequencer ID.
@@ -34,9 +34,28 @@ impl Hash for Sequencer {
 impl Sequencer {
     /// Tag `inner` with the specified `id`.
     pub fn new(id: usize, inner: Arc<dyn WriteBufferWriting>, metrics: &metric::Registry) -> Self {
-        let write: Metric<DurationHistogram> = metrics.register_metric(
+        let buckets = || {
+            DurationHistogramOptions::new(
+        vec![
+                    Duration::from_millis(5),
+                    Duration::from_millis(10),
+                    Duration::from_millis(20),
+                    Duration::from_millis(40),
+                    Duration::from_millis(80),
+                    Duration::from_millis(160),
+                    Duration::from_millis(320),
+                    Duration::from_millis(640),
+                    Duration::from_millis(1280),
+                    Duration::from_millis(2560),
+                    Duration::from_millis(5120),
+                    DURATION_MAX,
+                ]
+            )
+        };
+        let write: Metric<DurationHistogram> = metrics.register_metric_with_options(
             "sequencer_enqueue_duration",
             "sequencer enqueue call duration",
+            buckets,
         );
 
         let enqueue_success = write.recorder([
