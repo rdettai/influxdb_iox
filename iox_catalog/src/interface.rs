@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use data_types::{
     Column, ColumnSchema, ColumnType, KafkaPartition, KafkaTopic, KafkaTopicId, Namespace,
-    NamespaceId, NamespaceSchema, ParquetFile, ParquetFileId, ParquetFileParams,
-    ParquetFileWithMetadata, Partition, PartitionId, PartitionInfo, PartitionKey,
-    ProcessedTombstone, QueryPool, QueryPoolId, SequenceNumber, Sequencer, SequencerId, Table,
-    TableId, TablePartition, TableSchema, Timestamp, Tombstone, TombstoneId,
+    NamespaceId, NamespaceSchema, ParquetFile, ParquetFileId, ParquetFileParams, Partition,
+    PartitionId, PartitionInfo, PartitionKey, ProcessedTombstone, QueryPool, QueryPoolId,
+    SequenceNumber, Sequencer, SequencerId, Table, TableId, TablePartition, TableSchema, Timestamp,
+    Tombstone, TombstoneId,
 };
 use iox_time::TimeProvider;
 use snafu::{OptionExt, Snafu};
@@ -45,7 +45,10 @@ pub enum Error {
     UnknownColumnType { data_type: i16, name: String },
 
     #[snafu(display("namespace {} not found", name))]
-    NamespaceNotFound { name: String },
+    NamespaceNotFoundByName { name: String },
+
+    #[snafu(display("namespace {} not found", id))]
+    NamespaceNotFoundById { id: NamespaceId },
 
     #[snafu(display("table {} not found", id))]
     TableNotFound { id: TableId },
@@ -363,6 +366,9 @@ pub trait ColumnRepo: Send + Sync {
     /// Lists all columns in the passed in namespace id.
     async fn list_by_namespace_id(&mut self, namespace_id: NamespaceId) -> Result<Vec<Column>>;
 
+    /// List all columns for the given table ID.
+    async fn list_by_table_id(&mut self, table_id: TableId) -> Result<Vec<Column>>;
+
     /// List all columns.
     async fn list(&mut self) -> Result<Vec<Column>>;
 }
@@ -489,9 +495,6 @@ pub trait TombstoneRepo: Send + Sync {
     ) -> Result<Vec<Tombstone>>;
 }
 
-/// The starting compaction level for parquet files is zero.
-pub const INITIAL_COMPACTION_LEVEL: i16 = 0;
-
 /// Functions for working with parquet file pointers in the catalog
 #[async_trait]
 pub trait ParquetFileRepo: Send + Sync {
@@ -522,13 +525,6 @@ pub trait ParquetFileRepo: Send + Sync {
     /// [`to_delete`](ParquetFile::to_delete).
     async fn list_by_table_not_to_delete(&mut self, table_id: TableId) -> Result<Vec<ParquetFile>>;
 
-    /// List all parquet files and their metadata within a given table that are NOT marked as
-    /// [`to_delete`](ParquetFile::to_delete). Fetching metadata can be expensive.
-    async fn list_by_table_not_to_delete_with_metadata(
-        &mut self,
-        table_id: TableId,
-    ) -> Result<Vec<ParquetFileWithMetadata>>;
-
     /// Delete all parquet files that were marked to be deleted earlier than the specified time.
     /// Returns the deleted records.
     async fn delete_old(&mut self, older_than: Timestamp) -> Result<Vec<ParquetFile>>;
@@ -538,9 +534,9 @@ pub trait ParquetFileRepo: Send + Sync {
     async fn level_0(&mut self, sequencer_id: SequencerId) -> Result<Vec<ParquetFile>>;
 
     /// List parquet files for a given table partition, in a given time range, with compaction
-    /// level 1, and other criteria that define a file as a candidate for compaction with a level 0
+    /// level 2, and other criteria that define a file as a candidate for compaction with a level 0
     /// file
-    async fn level_1(
+    async fn level_2(
         &mut self,
         table_partition: TablePartition,
         min_time: Timestamp,
@@ -554,25 +550,15 @@ pub trait ParquetFileRepo: Send + Sync {
         partition_id: PartitionId,
     ) -> Result<Vec<ParquetFile>>;
 
-    /// List parquet files and their metadata for a given partition that are NOT marked as
-    /// [`to_delete`](ParquetFile::to_delete). Fetching metadata can be expensive.
-    async fn list_by_partition_not_to_delete_with_metadata(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> Result<Vec<ParquetFileWithMetadata>>;
-
-    /// Update the compaction level of the specified parquet files to level 1. Returns the IDs
-    /// of the files that were successfully updated.
-    async fn update_to_level_1(
+    /// Update the compaction level of the specified parquet files to level FILE_NON_OVERLAPPED_COMPACTION_LEVEL
+    /// Returns the IDs of the files that were successfully updated.
+    async fn update_to_level_2(
         &mut self,
         parquet_file_ids: &[ParquetFileId],
     ) -> Result<Vec<ParquetFileId>>;
 
     /// Verify if the parquet file exists by selecting its id
     async fn exist(&mut self, id: ParquetFileId) -> Result<bool>;
-
-    /// Fetch the parquet_metadata bytes for the given id. Potentially expensive.
-    async fn parquet_metadata(&mut self, id: ParquetFileId) -> Result<Vec<u8>>;
 
     /// Return count
     async fn count(&mut self) -> Result<i64>;
@@ -621,6 +607,20 @@ pub trait ProcessedTombstoneRepo: Send + Sync {
 }
 
 /// Gets the namespace schema including all tables and columns.
+pub async fn get_schema_by_id<R>(id: NamespaceId, repos: &mut R) -> Result<NamespaceSchema>
+where
+    R: RepoCollection + ?Sized,
+{
+    let namespace = repos
+        .namespaces()
+        .get_by_id(id)
+        .await?
+        .context(NamespaceNotFoundByIdSnafu { id })?;
+
+    get_schema_internal(namespace, repos).await
+}
+
+/// Gets the namespace schema including all tables and columns.
 pub async fn get_schema_by_name<R>(name: &str, repos: &mut R) -> Result<NamespaceSchema>
 where
     R: RepoCollection + ?Sized,
@@ -629,8 +629,15 @@ where
         .namespaces()
         .get_by_name(name)
         .await?
-        .context(NamespaceNotFoundSnafu { name })?;
+        .context(NamespaceNotFoundByNameSnafu { name })?;
 
+    get_schema_internal(namespace, repos).await
+}
+
+async fn get_schema_internal<R>(namespace: Namespace, repos: &mut R) -> Result<NamespaceSchema>
+where
+    R: RepoCollection + ?Sized,
+{
     // get the columns first just in case someone else is creating schema while we're doing this.
     let columns = repos.columns().list_by_namespace_id(namespace.id).await?;
     let tables = repos.tables().list_by_namespace_id(namespace.id).await?;
@@ -672,6 +679,37 @@ where
     }
 
     Ok(namespace)
+}
+
+/// Gets the table schema including all columns.
+pub async fn get_table_schema_by_id<R>(id: TableId, repos: &mut R) -> Result<TableSchema>
+where
+    R: RepoCollection + ?Sized,
+{
+    let columns = repos.columns().list_by_table_id(id).await?;
+    let mut schema = TableSchema::new(id);
+
+    for c in columns {
+        match ColumnType::try_from(c.column_type) {
+            Ok(column_type) => {
+                schema.columns.insert(
+                    c.name,
+                    ColumnSchema {
+                        id: c.id,
+                        column_type,
+                    },
+                );
+            }
+            _ => {
+                return Err(Error::UnknownColumnType {
+                    data_type: c.column_type,
+                    name: c.name,
+                });
+            }
+        }
+    }
+
+    Ok(schema)
 }
 
 /// Fetch all [`NamespaceSchema`] in the catalog.
@@ -773,7 +811,9 @@ pub(crate) mod test_helpers {
 
     use super::*;
     use ::test_helpers::{assert_contains, tracing::TracingCapture};
-    use data_types::ColumnId;
+    use data_types::{
+        ColumnId, ColumnSet, FILE_NON_OVERLAPPED_COMAPCTION_LEVEL, INITIAL_COMPACTION_LEVEL,
+    };
     use metric::{Attributes, DurationHistogram, Metric};
     use std::{
         ops::{Add, DerefMut},
@@ -794,8 +834,8 @@ pub(crate) mod test_helpers {
         test_tombstones_by_parquet_file(Arc::clone(&catalog)).await;
         test_parquet_file(Arc::clone(&catalog)).await;
         test_parquet_file_compaction_level_0(Arc::clone(&catalog)).await;
-        test_parquet_file_compaction_level_1(Arc::clone(&catalog)).await;
-        test_update_to_compaction_level_1(Arc::clone(&catalog)).await;
+        test_parquet_file_compaction_level_2(Arc::clone(&catalog)).await;
+        test_update_to_compaction_level_2(Arc::clone(&catalog)).await;
         test_processed_tombstones(Arc::clone(&catalog)).await;
         test_list_by_partiton_not_to_delete(Arc::clone(&catalog)).await;
         test_txn_isolation(Arc::clone(&catalog)).await;
@@ -1183,9 +1223,14 @@ pub(crate) mod test_helpers {
             .await
             .unwrap();
 
-        let mut want = vec![c, ccc];
-        want.extend(cols3);
+        let mut want = vec![c.clone(), ccc];
+        want.extend(cols3.clone());
         assert_eq!(want, columns);
+
+        let columns = repos.columns().list_by_table_id(table.id).await.unwrap();
+
+        let want2 = vec![c, cols3[1].clone()];
+        assert_eq!(want2, columns);
 
         // Listing columns should return all columns in the catalog
         let list = repos.columns().list().await.unwrap();
@@ -1667,10 +1712,10 @@ pub(crate) mod test_helpers {
             min_time,
             max_time,
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = repos
             .parquet_files()
@@ -1878,10 +1923,10 @@ pub(crate) mod test_helpers {
             min_time: Timestamp::new(1),
             max_time: Timestamp::new(10),
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = repos
             .parquet_files()
@@ -1896,13 +1941,6 @@ pub(crate) mod test_helpers {
             .await
             .unwrap();
         assert_eq!(parquet_file, pfg.unwrap());
-
-        let metadata = repos
-            .parquet_files()
-            .parquet_metadata(parquet_file.id)
-            .await
-            .unwrap();
-        assert_eq!(metadata, b"md1".to_vec());
 
         // verify that trying to create a file with the same UUID throws an error
         let err = repos
@@ -1936,13 +1974,13 @@ pub(crate) mod test_helpers {
             .list_by_sequencer_greater_than(sequencer.id, SequenceNumber::new(1))
             .await
             .unwrap();
-        assert_eq!(vec![parquet_file, other_file], files);
+        assert_eq!(vec![parquet_file.clone(), other_file.clone()], files);
         let files = repos
             .parquet_files()
             .list_by_sequencer_greater_than(sequencer.id, SequenceNumber::new(150))
             .await
             .unwrap();
-        assert_eq!(vec![other_file], files);
+        assert_eq!(vec![other_file.clone()], files);
 
         // verify that to_delete is initially set to null and the file does not get deleted
         assert!(parquet_file.to_delete.is_none());
@@ -1997,24 +2035,7 @@ pub(crate) mod test_helpers {
             .list_by_table_not_to_delete(other_table.id)
             .await
             .unwrap();
-        assert_eq!(files, vec![other_file]);
-
-        // test list_by_table_not_to_delete_with_metadata
-        let files = repos
-            .parquet_files()
-            .list_by_table_not_to_delete_with_metadata(table.id)
-            .await
-            .unwrap();
-        assert_eq!(files, vec![]);
-        let files = repos
-            .parquet_files()
-            .list_by_table_not_to_delete_with_metadata(other_table.id)
-            .await
-            .unwrap();
-        assert_eq!(
-            files,
-            vec![ParquetFileWithMetadata::new(other_file, b"md1".to_vec())]
-        );
+        assert_eq!(files, vec![other_file.clone()]);
 
         // test list_by_namespace_not_to_delete
         let namespace2 = repos
@@ -2073,7 +2094,7 @@ pub(crate) mod test_helpers {
             .list_by_namespace_not_to_delete(namespace2.id)
             .await
             .unwrap();
-        assert_eq!(vec![f1, f2], files);
+        assert_eq!(vec![f1.clone(), f2.clone()], files);
 
         let f3_params = ParquetFileParams {
             object_store_id: Uuid::new_v4(),
@@ -2089,7 +2110,7 @@ pub(crate) mod test_helpers {
             .list_by_namespace_not_to_delete(namespace2.id)
             .await
             .unwrap();
-        assert_eq!(vec![f1, f2, f3], files);
+        assert_eq!(vec![f1.clone(), f2.clone(), f3.clone()], files);
 
         repos.parquet_files().flag_for_delete(f2.id).await.unwrap();
         let files = repos
@@ -2238,10 +2259,10 @@ pub(crate) mod test_helpers {
             min_time,
             max_time,
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
 
         let parquet_file = repos
@@ -2279,15 +2300,15 @@ pub(crate) mod test_helpers {
             .await
             .unwrap();
 
-        // Create a compaction level 1 file
-        let level_1_params = ParquetFileParams {
+        // Create a compaction level 2 file
+        let level_2_params = ParquetFileParams {
             object_store_id: Uuid::new_v4(),
             ..parquet_file_params.clone()
         };
-        let level_1_file = repos.parquet_files().create(level_1_params).await.unwrap();
+        let level_2_file = repos.parquet_files().create(level_2_params).await.unwrap();
         repos
             .parquet_files()
-            .update_to_level_1(&[level_1_file.id])
+            .update_to_level_2(&[level_2_file.id])
             .await
             .unwrap();
 
@@ -2307,14 +2328,14 @@ pub(crate) mod test_helpers {
         );
     }
 
-    async fn test_parquet_file_compaction_level_1(catalog: Arc<dyn Catalog>) {
+    async fn test_parquet_file_compaction_level_2(catalog: Arc<dyn Catalog>) {
         let mut repos = catalog.repositories().await;
         let kafka = repos.kafka_topics().create_or_get("foo").await.unwrap();
         let pool = repos.query_pools().create_or_get("foo").await.unwrap();
         let namespace = repos
             .namespaces()
             .create(
-                "namespace_parquet_file_compaction_level_1_test",
+                "namespace_parquet_file_compaction_level_2_test",
                 "inf",
                 kafka.id,
                 pool.id,
@@ -2368,10 +2389,10 @@ pub(crate) mod test_helpers {
             min_time: query_min_time + 1,
             max_time: query_max_time - 1,
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = repos
             .parquet_files()
@@ -2489,7 +2510,7 @@ pub(crate) mod test_helpers {
         // Make all but _level_0_file compaction level 1
         repos
             .parquet_files()
-            .update_to_level_1(&[
+            .update_to_level_2(&[
                 parquet_file.id,
                 too_early_file.id,
                 too_late_file.id,
@@ -2506,21 +2527,21 @@ pub(crate) mod test_helpers {
         // Level 1 parquet files for a sequencer should contain only those that match the right
         // criteria
         let table_partition = TablePartition::new(sequencer.id, table.id, partition.id);
-        let level_1 = repos
+        let level_2 = repos
             .parquet_files()
-            .level_1(table_partition, query_min_time, query_max_time)
+            .level_2(table_partition, query_min_time, query_max_time)
             .await
             .unwrap();
-        let mut level_1_ids: Vec<_> = level_1.iter().map(|pf| pf.id).collect();
-        level_1_ids.sort();
+        let mut level_2_ids: Vec<_> = level_2.iter().map(|pf| pf.id).collect();
+        level_2_ids.sort();
         let expected = vec![parquet_file, overlap_lower_file, overlap_upper_file];
         let mut expected_ids: Vec<_> = expected.iter().map(|pf| pf.id).collect();
         expected_ids.sort();
 
         assert_eq!(
-            level_1_ids, expected_ids,
-            "\nlevel 1: {:#?}\nexpected: {:#?}",
-            level_1, expected,
+            level_2_ids, expected_ids,
+            "\nlevel 2: {:#?}\nexpected: {:#?}",
+            level_2, expected,
         );
     }
 
@@ -2574,10 +2595,10 @@ pub(crate) mod test_helpers {
             min_time,
             max_time,
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
 
         let parquet_file = repos
@@ -2610,10 +2631,10 @@ pub(crate) mod test_helpers {
             .unwrap();
         repos
             .parquet_files()
-            .update_to_level_1(&[level1_file.id])
+            .update_to_level_2(&[level1_file.id])
             .await
             .unwrap();
-        level1_file.compaction_level = 1;
+        level1_file.compaction_level = FILE_NON_OVERLAPPED_COMAPCTION_LEVEL;
 
         let other_partition_params = ParquetFileParams {
             partition_id: partition2.id,
@@ -2631,30 +2652,17 @@ pub(crate) mod test_helpers {
             .list_by_partition_not_to_delete(partition.id)
             .await
             .unwrap();
-        assert_eq!(files, vec![parquet_file, level1_file]);
-
-        let files = repos
-            .parquet_files()
-            .list_by_partition_not_to_delete_with_metadata(partition.id)
-            .await
-            .unwrap();
-        assert_eq!(
-            files,
-            vec![
-                ParquetFileWithMetadata::new(parquet_file, b"md1".to_vec()),
-                ParquetFileWithMetadata::new(level1_file, b"md1".to_vec()),
-            ]
-        );
+        assert_eq!(files, vec![parquet_file.clone(), level1_file.clone()]);
     }
 
-    async fn test_update_to_compaction_level_1(catalog: Arc<dyn Catalog>) {
+    async fn test_update_to_compaction_level_2(catalog: Arc<dyn Catalog>) {
         let mut repos = catalog.repositories().await;
         let kafka = repos.kafka_topics().create_or_get("foo").await.unwrap();
         let pool = repos.query_pools().create_or_get("foo").await.unwrap();
         let namespace = repos
             .namespaces()
             .create(
-                "namespace_update_to_compaction_level_1_test",
+                "namespace_update_to_compaction_level_2_test",
                 "inf",
                 kafka.id,
                 pool.id,
@@ -2693,10 +2701,10 @@ pub(crate) mod test_helpers {
             min_time: query_min_time + 1,
             max_time: query_max_time - 1,
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = repos
             .parquet_files()
@@ -2715,7 +2723,7 @@ pub(crate) mod test_helpers {
         let nonexistent_parquet_file_id = ParquetFileId::new(level_0_file.id.get() + 1);
 
         // Level 0 parquet files should contain both existing files at this point
-        let expected = vec![parquet_file, level_0_file];
+        let expected = vec![parquet_file.clone(), level_0_file.clone()];
         let level_0 = repos.parquet_files().level_0(sequencer.id).await.unwrap();
         let mut level_0_ids: Vec<_> = level_0.iter().map(|pf| pf.id).collect();
         level_0_ids.sort();
@@ -2731,7 +2739,7 @@ pub(crate) mod test_helpers {
         // should succeed
         let updated = repos
             .parquet_files()
-            .update_to_level_1(&[parquet_file.id, nonexistent_parquet_file_id])
+            .update_to_level_2(&[parquet_file.id, nonexistent_parquet_file_id])
             .await
             .unwrap();
         assert_eq!(updated, vec![parquet_file.id]);
@@ -2752,19 +2760,19 @@ pub(crate) mod test_helpers {
         // Level 1 parquet files for a sequencer should only contain parquet_file
         let expected = vec![parquet_file];
         let table_partition = TablePartition::new(sequencer.id, table.id, partition.id);
-        let level_1 = repos
+        let level_2 = repos
             .parquet_files()
-            .level_1(table_partition, query_min_time, query_max_time)
+            .level_2(table_partition, query_min_time, query_max_time)
             .await
             .unwrap();
-        let mut level_1_ids: Vec<_> = level_1.iter().map(|pf| pf.id).collect();
-        level_1_ids.sort();
+        let mut level_2_ids: Vec<_> = level_2.iter().map(|pf| pf.id).collect();
+        level_2_ids.sort();
         let mut expected_ids: Vec<_> = expected.iter().map(|pf| pf.id).collect();
         expected_ids.sort();
         assert_eq!(
-            level_1_ids, expected_ids,
+            level_2_ids, expected_ids,
             "\nlevel 1: {:#?}\nexpected: {:#?}",
-            level_1, expected,
+            level_2, expected,
         );
     }
 
@@ -2810,10 +2818,10 @@ pub(crate) mod test_helpers {
             min_time: Timestamp::new(100),
             max_time: Timestamp::new(250),
             file_size_bytes: 1337,
-            parquet_metadata: b"md1".to_vec(),
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let p1 = repos
             .parquet_files()

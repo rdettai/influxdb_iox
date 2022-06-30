@@ -4,9 +4,9 @@ use bytes::Bytes;
 use clap_blocks::object_store::{make_object_store, ObjectStoreType};
 use clap_blocks::{catalog_dsn::CatalogDsnConfig, object_store::ObjectStoreConfig};
 use data_types::{
-    ColumnType, KafkaPartition, NamespaceId, NamespaceSchema as CatalogNamespaceSchema,
-    ParquetFile as CatalogParquetFile, ParquetFileParams, PartitionId, SequenceNumber, SequencerId,
-    TableId, Timestamp,
+    ColumnId, ColumnSet, ColumnType, KafkaPartition, NamespaceId,
+    NamespaceSchema as CatalogNamespaceSchema, ParquetFile as CatalogParquetFile,
+    ParquetFileParams, PartitionId, SequenceNumber, SequencerId, TableId, Timestamp,
 };
 use futures::future::join_all;
 use influxdb_iox_client::{
@@ -268,8 +268,8 @@ async fn load_schema(
             .create_or_get(table_name, namespace.id)
             .await?;
         for (column_name, column_schema) in &table_schema.columns {
-            let column_type = column_schema.column_type as i16;
-            let column_type: ColumnType = column_type
+            let column_type: ColumnType = column_schema
+                .column_type()
                 .try_into()
                 .expect("column type from remote not valid");
             let _column = repos
@@ -360,10 +360,10 @@ async fn load_parquet_files(
                     min_time: Timestamp::new(p.min_time),
                     max_time: Timestamp::new(p.max_time),
                     file_size_bytes: p.file_size_bytes,
-                    parquet_metadata: vec![],
                     row_count: p.row_count,
                     compaction_level: p.compaction_level as i16,
                     created_at: Timestamp::new(p.created_at),
+                    column_set: ColumnSet::new(p.column_set.into_iter().map(ColumnId::new)),
                 };
 
                 repos.parquet_files().create(params).await?
@@ -387,7 +387,7 @@ struct PartitionMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use data_types::{ColumnType, ParquetFileId};
+    use data_types::{ColumnType, ParquetFileId, INITIAL_COMPACTION_LEVEL};
     use influxdb_iox_client::schema::generated_types::*;
     use iox_catalog::mem::MemCatalog;
     use std::collections::HashMap;
@@ -581,8 +581,9 @@ mod tests {
                 to_delete: 0,
                 file_size_bytes,
                 row_count,
-                compaction_level: 0,
+                compaction_level: INITIAL_COMPACTION_LEVEL as i32,
                 created_at: created_at.get(),
+                column_set: vec![1, 2],
             }],
         )
         .await
@@ -605,8 +606,9 @@ mod tests {
             to_delete: None,
             file_size_bytes,
             row_count,
-            compaction_level: 0,
+            compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at,
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         }];
         assert_eq!(expected, files);
     }

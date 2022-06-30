@@ -2,17 +2,17 @@
 
 use crate::query::QueryableParquetChunk;
 use data_types::{
-    ParquetFileId, ParquetFileParams, ParquetFileWithMetadata, PartitionId, Timestamp, Tombstone,
+    ParquetFile, ParquetFileId, ParquetFileParams, PartitionId, TableSchema, Timestamp, Tombstone,
     TombstoneId,
 };
 use datafusion::physical_plan::SendableRecordBatchStream;
 use observability_deps::tracing::*;
 use parquet_file::{
-    chunk::{ChunkMetrics, DecodedParquetFile, ParquetChunk},
+    chunk::ParquetChunk,
     metadata::{IoxMetadata, IoxParquetMetaData},
     storage::ParquetStorage,
 };
-use schema::sort::SortKey;
+use schema::{sort::SortKey, Schema};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
@@ -39,25 +39,52 @@ impl GroupWithTombstones {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GroupWithMinTimeAndSize {
     /// Parquet files and their metadata
-    pub(crate) parquet_files: Vec<ParquetFileWithMetadata>,
+    pub(crate) parquet_files: Vec<ParquetFile>,
 
     /// min time of all parquet_files
     pub(crate) min_time: Timestamp,
 
     /// total size of all file
     pub(crate) total_file_size_bytes: i64,
+
+    /// true if this group was split from a group of many overlapped files
+    pub(crate) overlapped_with_other_groups: bool,
+}
+
+impl GroupWithMinTimeAndSize {
+    /// Make GroupWithMinTimeAndSize for a given set of parquet files
+    pub fn new(files: Vec<ParquetFile>, overlaped: bool) -> Self {
+        let mut group = Self {
+            parquet_files: files,
+            min_time: Timestamp::new(i64::MAX),
+            total_file_size_bytes: 0,
+            overlapped_with_other_groups: overlaped,
+        };
+
+        assert!(
+            !group.parquet_files.is_empty(),
+            "invalid empty group for computing min time and total size"
+        );
+
+        for file in &group.parquet_files {
+            group.min_time = group.min_time.min(file.min_time);
+            group.total_file_size_bytes += file.file_size_bytes;
+        }
+
+        group
+    }
 }
 
 /// Wrapper of a parquet file and its tombstones
 #[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub struct ParquetFileWithTombstone {
-    data: Arc<ParquetFileWithMetadata>,
+    data: Arc<ParquetFile>,
     tombstones: Vec<Tombstone>,
 }
 
 impl std::ops::Deref for ParquetFileWithTombstone {
-    type Target = Arc<ParquetFileWithMetadata>;
+    type Target = Arc<ParquetFile>;
 
     fn deref(&self) -> &Self::Target {
         &self.data
@@ -65,8 +92,8 @@ impl std::ops::Deref for ParquetFileWithTombstone {
 }
 
 impl ParquetFileWithTombstone {
-    /// Pair a [`ParquetFileWithMetadata`] with the specified [`Tombstone`] instances.
-    pub fn new(data: Arc<ParquetFileWithMetadata>, tombstones: Vec<Tombstone>) -> Self {
+    /// Pair a [`ParquetFile`] with the specified [`Tombstone`] instances.
+    pub fn new(data: Arc<ParquetFile>, tombstones: Vec<Tombstone>) -> Self {
         Self { data, tombstones }
     }
 
@@ -108,24 +135,34 @@ impl ParquetFileWithTombstone {
         &self,
         store: ParquetStorage,
         table_name: String,
-        sort_key: Option<SortKey>,
+        table_schema: &TableSchema,
         partition_sort_key: Option<SortKey>,
     ) -> QueryableParquetChunk {
-        let decoded_parquet_file = DecodedParquetFile::new((*self.data).clone());
+        let column_id_lookup = table_schema.column_id_map();
+        let selection: Vec<_> = self
+            .column_set
+            .iter()
+            .flat_map(|id| column_id_lookup.get(id).copied())
+            .collect();
+        let table_schema: Schema = table_schema
+            .clone()
+            .try_into()
+            .expect("table schema is broken");
+        let schema = table_schema
+            .select_by_names(&selection)
+            .expect("schema in-sync");
+        let pk = schema.primary_key();
+        let sort_key = partition_sort_key.as_ref().map(|sk| sk.filter_to(&pk));
 
-        let parquet_chunk = ParquetChunk::new(
-            &decoded_parquet_file,
-            ChunkMetrics::new_unregistered(), // TODO: need to add metrics
-            store,
-        );
+        let parquet_chunk = ParquetChunk::new(Arc::clone(&self.data), Arc::new(schema), store);
 
         trace!(
-            parquet_file_id=?decoded_parquet_file.parquet_file.id,
-            parquet_file_sequencer_id=?decoded_parquet_file.parquet_file.sequencer_id,
-            parquet_file_namespace_id=?decoded_parquet_file.parquet_file.namespace_id,
-            parquet_file_table_id=?decoded_parquet_file.parquet_file.table_id,
-            parquet_file_partition_id=?decoded_parquet_file.parquet_file.partition_id,
-            parquet_file_object_store_id=?decoded_parquet_file.parquet_file.object_store_id,
+            parquet_file_id=?self.id,
+            parquet_file_sequencer_id=?self.sequencer_id,
+            parquet_file_namespace_id=?self.namespace_id,
+            parquet_file_table_id=?self.table_id,
+            parquet_file_partition_id=?self.partition_id,
+            parquet_file_object_store_id=?self.object_store_id,
             "built parquet chunk from metadata"
         );
 
@@ -141,12 +178,6 @@ impl ParquetFileWithTombstone {
             sort_key,
             partition_sort_key,
         )
-    }
-
-    /// Return iox metadata of the parquet file
-    pub fn iox_metadata(&self) -> IoxMetadata {
-        let decoded_parquet_file = DecodedParquetFile::new((*self.data).clone());
-        decoded_parquet_file.iox_metadata
     }
 }
 
@@ -189,8 +220,11 @@ impl CatalogUpdate {
         file_size: usize,
         md: IoxParquetMetaData,
         tombstones: BTreeMap<TombstoneId, Tombstone>,
+        table_schema: &TableSchema,
     ) -> Self {
-        let parquet_file = meta.to_parquet_file(partition_id, file_size, &md);
+        let parquet_file = meta.to_parquet_file(partition_id, file_size, &md, |name| {
+            table_schema.columns.get(name).expect("unknown column").id
+        });
         Self {
             meta,
             tombstones,

@@ -2,24 +2,18 @@
 
 #![allow(missing_docs)]
 
-use crate::{
-    data::{
-        IngesterData, NamespaceData, PartitionData, PersistingBatch, QueryableBatch, SequencerData,
-        SnapshotBatch, TableData,
-    },
-    partioning::DefaultPartitioner,
+use crate::data::{
+    IngesterData, NamespaceData, PartitionData, PersistingBatch, QueryableBatch, SequencerData,
+    SnapshotBatch, TableData,
 };
 use arrow::record_batch::RecordBatch;
 use arrow_util::assert_batches_eq;
 use bitflags::bitflags;
 use data_types::{
     KafkaPartition, NamespaceId, PartitionId, PartitionKey, SequenceNumber, SequencerId, TableId,
-    Timestamp, Tombstone, TombstoneId,
+    Timestamp, Tombstone, TombstoneId, INITIAL_COMPACTION_LEVEL,
 };
-use iox_catalog::{
-    interface::{Catalog, INITIAL_COMPACTION_LEVEL},
-    mem::MemCatalog,
-};
+use iox_catalog::{interface::Catalog, mem::MemCatalog};
 use iox_query::test::{raw_data, TestChunk};
 use iox_time::{SystemProvider, Time, TimeProvider};
 use object_store::memory::InMemory;
@@ -708,7 +702,6 @@ pub fn make_ingester_data(two_partitions: bool, loc: DataLocation) -> IngesterDa
         object_store,
         catalog,
         sequencers,
-        Arc::new(DefaultPartitioner::default()),
         exec,
         backoff::BackoffConfig::default(),
     )
@@ -753,7 +746,6 @@ pub async fn make_ingester_data_with_tombstones(loc: DataLocation) -> IngesterDa
         object_store,
         catalog,
         sequencers,
-        Arc::new(DefaultPartitioner::default()),
         exec,
         backoff::BackoffConfig::default(),
     )

@@ -3,8 +3,8 @@ use super::DbScenario;
 use async_trait::async_trait;
 use backoff::BackoffConfig;
 use data_types::{
-    DeletePredicate, NonEmptyString, PartitionId, PartitionKey, Sequence, SequenceNumber,
-    SequencerId, TombstoneId,
+    DeletePredicate, IngesterMapping, KafkaPartition, NonEmptyString, PartitionId, PartitionKey,
+    Sequence, SequenceNumber, SequencerId, TombstoneId,
 };
 use dml::{DmlDelete, DmlMeta, DmlOperation, DmlWrite};
 use futures::StreamExt;
@@ -18,13 +18,11 @@ use ingester::{
         FlatIngesterQueryResponse, IngesterData, IngesterQueryResponse, Persister, SequencerData,
     },
     lifecycle::LifecycleHandle,
-    partioning::{Partitioner, PartitionerError},
     querier_handler::prepare_data_to_querier,
 };
 use iox_catalog::interface::get_schema_by_name;
 use iox_tests::util::{TestCatalog, TestNamespace, TestSequencer};
 use itertools::Itertools;
-use mutable_batch::MutableBatch;
 use mutable_batch_lp::LinesConverter;
 use parquet_file::storage::ParquetStorage;
 use querier::{
@@ -32,13 +30,13 @@ use querier::{
     IngesterFlightClientQueryData, QuerierCatalogCache, QuerierNamespace,
 };
 use schema::selection::Selection;
+use sharder::JumpHash;
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap},
     fmt::Display,
     fmt::Write,
     sync::Arc,
-    sync::Mutex,
 };
 
 // Structs, enums, and functions used to exhaust all test scenarios of chunk lifecycle
@@ -623,9 +621,6 @@ struct MockIngester {
     /// Sequencer used for testing.
     sequencer: Arc<TestSequencer>,
 
-    /// Special partitioner that lets us control to which partition we write.
-    partitioner: Arc<ConstantPartitioner>,
-
     /// Memory of partition keys for certain sequence numbers.
     ///
     /// This is currently required because [`DmlWrite`] does not carry partiion information so we
@@ -657,12 +652,10 @@ impl MockIngester {
                 catalog.metric_registry(),
             ),
         )]);
-        let partitioner = Arc::new(ConstantPartitioner::default());
         let ingester_data = Arc::new(IngesterData::new(
             catalog.object_store(),
             catalog.catalog(),
             sequencers,
-            Arc::clone(&partitioner) as _,
             catalog.exec(),
             BackoffConfig::default(),
         ));
@@ -671,7 +664,6 @@ impl MockIngester {
             catalog,
             ns,
             sequencer,
-            partitioner,
             partition_keys: Default::default(),
             ingester_data,
             sequence_counter: 0,
@@ -686,13 +678,6 @@ impl MockIngester {
     /// access.
     async fn buffer_operation(&mut self, dml_operation: DmlOperation) {
         let lifecycle_handle = NoopLifecycleHandle {};
-
-        // set up partitioner for writes
-        if matches!(dml_operation, DmlOperation::Write(_)) {
-            let sequence_number = dml_operation.meta().sequence().unwrap().sequence_number;
-            self.partitioner
-                .set(self.partition_keys.get(&sequence_number).unwrap().clone());
-        }
 
         let should_pause = self
             .ingester_data
@@ -781,7 +766,7 @@ impl MockIngester {
         let op = DmlOperation::Write(DmlWrite::new(
             self.ns.namespace.name.clone(),
             mutable_batches,
-            None,
+            Some(PartitionKey::from(partition_key)),
             meta,
         ));
         (op, partition_ids)
@@ -855,12 +840,17 @@ impl MockIngester {
             self.catalog.metric_registry(),
             usize::MAX,
         ));
-        let ingester_connection = IngesterConnectionImpl::new_with_flight_client(
-            vec![String::from("some_address")],
+        let sequencer_to_ingesters = [(0, IngesterMapping::Addr(Arc::from("some_address")))]
+            .into_iter()
+            .collect();
+        let ingester_connection = IngesterConnectionImpl::by_sequencer_with_flight_client(
+            sequencer_to_ingesters,
             Arc::new(self),
             Arc::clone(&catalog_cache),
         );
         let ingester_connection = Arc::new(ingester_connection);
+        let sharder =
+            Arc::new(JumpHash::new((0..1).map(KafkaPartition::new).map(Arc::new)).unwrap());
 
         Arc::new(QuerierNamespace::new_testing(
             catalog_cache,
@@ -869,7 +859,8 @@ impl MockIngester {
             ns.namespace.name.clone().into(),
             schema,
             catalog.exec(),
-            ingester_connection,
+            Some(ingester_connection),
+            sharder,
         ))
     }
 }
@@ -893,25 +884,6 @@ impl LifecycleHandle for NoopLifecycleHandle {
 
     fn can_resume_ingest(&self) -> bool {
         true
-    }
-}
-
-/// Special partitioner that returns a constant values.
-#[derive(Debug, Default)]
-struct ConstantPartitioner {
-    partition_key: Mutex<String>,
-}
-
-impl ConstantPartitioner {
-    /// Set partition key.
-    fn set(&self, partition_key: String) {
-        *self.partition_key.lock().unwrap() = partition_key;
-    }
-}
-
-impl Partitioner for ConstantPartitioner {
-    fn partition_key(&self, _batch: &MutableBatch) -> Result<PartitionKey, PartitionerError> {
-        Ok(self.partition_key.lock().unwrap().clone().into())
     }
 }
 

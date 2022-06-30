@@ -6,11 +6,12 @@ use clap_blocks::{
     compactor::CompactorConfig,
     ingester::IngesterConfig,
     object_store::{make_object_store, ObjectStoreConfig},
-    querier::QuerierConfig,
+    querier::{IngesterAddresses, QuerierConfig},
     run_config::RunConfig,
     socket_addr::SocketAddr,
     write_buffer::WriteBufferConfig,
 };
+use data_types::IngesterMapping;
 use iox_query::exec::Executor;
 use iox_time::{SystemProvider, TimeProvider};
 use ioxd_common::{
@@ -208,8 +209,12 @@ pub struct Config {
     )]
     pub persist_memory_threshold_bytes: usize,
 
-    /// If an individual partition crosses this size threshold, it will be persisted.
-    /// The default value is 300MB (in bytes).
+    /// If the total bytes written to an individual partition crosses
+    /// this size threshold, it will be persisted.  The default value
+    /// is 300MB (in bytes).
+    ///
+    /// NOTE: This number is related, but *NOT* the same as the size
+    /// of the memory used to keep the partition buffered.
     #[clap(
         long = "--persist-partition-size-threshold-bytes",
         env = "INFLUXDB_IOX_PERSIST_PARTITION_SIZE_THRESHOLD_BYTES",
@@ -394,8 +399,10 @@ impl Config {
         };
 
         let querier_config = QuerierConfig {
-            num_query_threads: None,    // will be ignored
-            ingester_addresses: vec![], // will be ignored
+            num_query_threads: None,           // will be ignored
+            ingester_addresses: vec![],        // will be ignored
+            sequencer_to_ingesters_file: None, // will be ignored
+            sequencer_to_ingesters: None,      // will be ignored
             ram_pool_bytes: querier_ram_pool_bytes,
             max_concurrent_queries: querier_max_concurrent_queries,
         };
@@ -514,7 +521,16 @@ pub async fn command(config: Config) -> Result<()> {
     )
     .await?;
 
-    let ingester_addresses = vec![format!("http://{}", ingester_run_config.grpc_bind_address)];
+    let ingester_addresses = IngesterAddresses::BySequencer(
+        [(
+            0,
+            IngesterMapping::Addr(Arc::from(
+                format!("http://{}", ingester_run_config.grpc_bind_address).as_str(),
+            )),
+        )]
+        .into_iter()
+        .collect(),
+    );
     info!(?ingester_addresses, "starting querier");
     let querier = create_querier_server_type(QuerierServerTypeArgs {
         common_state: &common_state,

@@ -14,12 +14,12 @@ iox_catalog = { path = "../iox_catalog" }
 iox_time = { path = "../iox_time" }
 metric = { path = "../metric" }
 mutable_batch_lp = { path = "../mutable_batch_lp" }
-object_store = "0.0.1"
+object_store = "0.3.0"
 observability_deps = { path = "../observability_deps" }
 parquet_file = { path = "../parquet_file" }
 iox_query = { path = "../iox_query" }
 schema = { path = "../schema" }
 sharder = { path = "../sharder" }
-uuid = { version = "0.8", features = ["v4"] }
+uuid = { version = "1", features = ["v4"] }
 workspace-hack = { path = "../workspace-hack"}
 futures = "0.3.21"

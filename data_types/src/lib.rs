@@ -18,17 +18,26 @@ use schema::{
     TIME_COLUMN_NAME,
 };
 use snafu::{ResultExt, Snafu};
+use sqlx::postgres::PgHasArrayType;
 use std::{
     borrow::{Borrow, Cow},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     convert::TryFrom,
     fmt::{Display, Write},
     mem::{self, size_of_val},
-    num::{FpCategory, NonZeroU32, NonZeroU64},
+    num::{FpCategory, NonZeroU64},
     ops::{Add, Deref, RangeInclusive, Sub},
     sync::Arc,
 };
 use uuid::Uuid;
+
+/// Compaction levels
+/// The starting compaction level for parquet files persisted by an Ingester is zero.
+pub const INITIAL_COMPACTION_LEVEL: i16 = 0;
+/// Level of files persisted by a Comapactor that overlapped with other level-1 files
+pub const FILE_OVERLAPPED_COMPACTION_LEVEL: i16 = 1;
+/// Level of files persisted by a Comapctor that do not over lap with non-level-0 files
+pub const FILE_NON_OVERLAPPED_COMAPCTION_LEVEL: i16 = 2;
 
 /// Unique ID for a `Namespace`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
@@ -123,6 +132,12 @@ impl ColumnId {
     }
 }
 
+impl PgHasArrayType for ColumnId {
+    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
+        <i64 as PgHasArrayType>::array_type_info()
+    }
+}
+
 /// Unique ID for a `Sequencer`. Note this is NOT the same as the
 /// "sequencer_id" in the `write_buffer` which currently means
 /// "kafka partition".
@@ -167,6 +182,19 @@ impl std::fmt::Display for KafkaPartition {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// Potential configurations of ingester connections for the querier to associate with a sequencer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IngesterMapping {
+    /// Deliberately not mapping this sequencer to an ingester. If the querier gets a query for
+    /// this sequencer, it should return an error.
+    NotMapped,
+    /// Deliberately not contacting ingesters for this sequencer. If the querier gets a query for
+    /// this sequencer, it should only return persisted data.
+    Ignore,
+    /// The address of the ingester to contact for this sequencer.
+    Addr(Arc<str>),
 }
 
 /// Unique ID for a `Partition`
@@ -460,6 +488,14 @@ impl TableSchema {
                 .iter()
                 .map(|(k, v)| size_of_val(k) + k.capacity() + size_of_val(v))
                 .sum::<usize>()
+    }
+
+    /// Create `ID->name` map for columns.
+    pub fn column_id_map(&self) -> HashMap<ColumnId, &str> {
+        self.columns
+            .iter()
+            .map(|(name, c)| (c.id, name.as_str()))
+            .collect()
     }
 }
 
@@ -799,13 +835,61 @@ pub struct Tombstone {
 impl Tombstone {
     /// Estimate the memory consumption of this object and its contents
     pub fn size(&self) -> usize {
-        // No additional heap allocations
-        std::mem::size_of_val(self)
+        std::mem::size_of_val(self) + self.serialized_predicate.capacity()
+    }
+}
+
+/// Set of columns.
+#[derive(Debug, Clone, PartialEq, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct ColumnSet(Vec<ColumnId>);
+
+impl ColumnSet {
+    /// Create new column set.
+    ///
+    /// The order of the passed columns will NOT be preserved.
+    ///
+    /// # Panic
+    /// Panics when the set of passed columns contains duplicates.
+    pub fn new<I>(columns: I) -> Self
+    where
+        I: IntoIterator<Item = ColumnId>,
+    {
+        let mut columns: Vec<ColumnId> = columns.into_iter().collect();
+        columns.sort();
+
+        let len_pre_dedup = columns.len();
+        columns.dedup();
+        let len_post_dedup = columns.len();
+        assert_eq!(len_pre_dedup, len_post_dedup, "set contains duplicates");
+
+        columns.shrink_to_fit();
+
+        Self(columns)
+    }
+
+    /// Estimate the memory consumption of this object and its contents
+    pub fn size(&self) -> usize {
+        std::mem::size_of_val(self) + (std::mem::size_of::<ChunkId>() * self.0.capacity())
+    }
+}
+
+impl From<ColumnSet> for Vec<ColumnId> {
+    fn from(set: ColumnSet) -> Self {
+        set.0
+    }
+}
+
+impl Deref for ColumnSet {
+    type Target = [ColumnId];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
     }
 }
 
 /// Data for a parquet file reference that has been inserted in the catalog.
-#[derive(Debug, Clone, Copy, PartialEq, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct ParquetFile {
     /// the id of the file in the catalog
     pub id: ParquetFileId,
@@ -834,141 +918,41 @@ pub struct ParquetFile {
     /// the number of rows of data in this file
     pub row_count: i64,
     /// the compaction level of the file
+    ///  . 0 (INITIAL_COMPACTION_LEVEL): represents a level-0 file that is persisted by an Ingester.
+    ///       Partitions with level-0 files are usually hot/recent partitions.
+    ///  . 1 (FILE_OVERLAPPED_COMPACTION_LEVEL): represents a level-1 file that is persisted by a
+    ///       Compactor and potentially overlaps with other level-1 files. Partitions with level-1 files
+    ///       are partitions with a lot of or/and large overlapped files that have to go through many
+    ///       compaction cycles before they are fully compacted to non-overlapped files.
+    ///  . 2 (FILE_NON_OVERLAPPED_COMAPCTION_LEVEL): represents a level-2 file that is persisted by a
+    ///       Compactor and does not overlap with other files except level 0 ones. Eventually,
+    ///       cold partitions (partitions that no longer needs to get compacted) will only include
+    ///       one or many level-2 files
     pub compaction_level: i16,
     /// the creation time of the parquet file
     pub created_at: Timestamp,
+    /// Set of columns within this parquet file.
+    ///
+    /// # Relation to Table-wide Column Set
+    /// Columns within this set may or may not be part of the table-wide schema.
+    ///
+    /// Columns that are NOT part of the table-wide schema must be ignored. It is likely that these
+    /// columns were originally part of the table but were later removed.
+    ///
+    /// # Column Types
+    /// Column types are identical to the table-wide types.
+    ///
+    /// # Column Order & Sort Key
+    /// The columns that are present in the table-wide schema are sorted according to the partition
+    /// sort key. The occur in the parquet file according to this order.
+    pub column_set: ColumnSet,
 }
 
 impl ParquetFile {
     /// Estimate the memory consumption of this object and its contents
     pub fn size(&self) -> usize {
-        // No additional heap allocations
-        std::mem::size_of_val(self)
-    }
-}
-
-/// Data for a parquet file reference that has been inserted in the catalog, including the
-/// `parquet_metadata` field that can be expensive to fetch.
-#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
-pub struct ParquetFileWithMetadata {
-    /// the id of the file in the catalog
-    pub id: ParquetFileId,
-    /// the sequencer that sequenced writes that went into this file
-    pub sequencer_id: SequencerId,
-    /// the namespace
-    pub namespace_id: NamespaceId,
-    /// the table
-    pub table_id: TableId,
-    /// the partition
-    pub partition_id: PartitionId,
-    /// the uuid used in the object store path for this file
-    pub object_store_id: Uuid,
-    /// the minimum sequence number from a record in this file
-    pub min_sequence_number: SequenceNumber,
-    /// the maximum sequence number from a record in this file
-    pub max_sequence_number: SequenceNumber,
-    /// the min timestamp of data in this file
-    pub min_time: Timestamp,
-    /// the max timestamp of data in this file
-    pub max_time: Timestamp,
-    /// When this file was marked for deletion
-    pub to_delete: Option<Timestamp>,
-    /// file size in bytes
-    pub file_size_bytes: i64,
-    /// thrift-encoded parquet metadata
-    pub parquet_metadata: Vec<u8>,
-    /// the number of rows of data in this file
-    pub row_count: i64,
-    /// the compaction level of the file
-    pub compaction_level: i16,
-    /// the creation time of the parquet file
-    pub created_at: Timestamp,
-}
-
-impl ParquetFileWithMetadata {
-    /// Create an instance from an instance of ParquetFile and metadata bytes fetched from the
-    /// catalog.
-    pub fn new(parquet_file: ParquetFile, parquet_metadata: Vec<u8>) -> Self {
-        let ParquetFile {
-            id,
-            sequencer_id,
-            namespace_id,
-            table_id,
-            partition_id,
-            object_store_id,
-            min_sequence_number,
-            max_sequence_number,
-            min_time,
-            max_time,
-            to_delete,
-            file_size_bytes,
-            row_count,
-            compaction_level,
-            created_at,
-        } = parquet_file;
-
-        Self {
-            id,
-            sequencer_id,
-            namespace_id,
-            table_id,
-            partition_id,
-            object_store_id,
-            min_sequence_number,
-            max_sequence_number,
-            min_time,
-            max_time,
-            to_delete,
-            file_size_bytes,
-            parquet_metadata,
-            row_count,
-            compaction_level,
-            created_at,
-        }
-    }
-
-    /// Split the parquet_metadata off, leaving a regular ParquetFile and the bytes to transfer
-    /// ownership separately.
-    pub fn split_off_metadata(self) -> (ParquetFile, Vec<u8>) {
-        let Self {
-            id,
-            sequencer_id,
-            namespace_id,
-            table_id,
-            partition_id,
-            object_store_id,
-            min_sequence_number,
-            max_sequence_number,
-            min_time,
-            max_time,
-            to_delete,
-            file_size_bytes,
-            parquet_metadata,
-            row_count,
-            compaction_level,
-            created_at,
-        } = self;
-
-        (
-            ParquetFile {
-                id,
-                sequencer_id,
-                namespace_id,
-                table_id,
-                partition_id,
-                object_store_id,
-                min_sequence_number,
-                max_sequence_number,
-                min_time,
-                max_time,
-                to_delete,
-                file_size_bytes,
-                row_count,
-                compaction_level,
-                created_at,
-            },
-            parquet_metadata,
-        )
+        std::mem::size_of_val(self) + self.column_set.size()
+            - std::mem::size_of_val(&self.column_set)
     }
 }
 
@@ -995,14 +979,14 @@ pub struct ParquetFileParams {
     pub max_time: Timestamp,
     /// file size in bytes
     pub file_size_bytes: i64,
-    /// thrift-encoded parquet metadata
-    pub parquet_metadata: Vec<u8>,
     /// the number of rows of data in this file
     pub row_count: i64,
     /// the compaction level of the file
     pub compaction_level: i16,
     /// the creation time of the parquet file
     pub created_at: Timestamp,
+    /// columns in this file.
+    pub column_set: ColumnSet,
 }
 
 /// Data for a processed tombstone reference in the catalog.
@@ -1055,7 +1039,7 @@ impl std::fmt::Debug for ChunkId {
 
 impl std::fmt::Display for ChunkId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if (self.0.get_variant() == Some(uuid::Variant::RFC4122))
+        if (self.0.get_variant() == uuid::Variant::RFC4122)
             && (self.0.get_version() == Some(uuid::Version::Random))
         {
             f.debug_tuple("ChunkId").field(&self.0).finish()
@@ -1077,16 +1061,15 @@ impl From<Uuid> for ChunkId {
 /// 1. **upsert order:** chunks with higher order overwrite data in chunks with lower order
 /// 2. **locking order:** chunks must be locked in consistent (ascending) order
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ChunkOrder(NonZeroU32);
+pub struct ChunkOrder(i64);
 
 impl ChunkOrder {
     /// The minimum ordering value a chunk could have. Currently only used in testing.
-    // TODO: remove `unsafe` once https://github.com/rust-lang/rust/issues/51999 is fixed
-    pub const MIN: Self = Self(unsafe { NonZeroU32::new_unchecked(1) });
+    pub const MIN: Self = Self(0);
 
     /// Create a ChunkOrder from the given value.
-    pub fn new(order: u32) -> Option<Self> {
-        NonZeroU32::new(order).map(Self)
+    pub fn new(order: i64) -> Option<Self> {
+        Some(Self(order))
     }
 }
 
@@ -3236,5 +3219,11 @@ mod tests {
     #[should_panic = "timestamp wraparound"]
     fn test_timestamp_wraparound_panic_sub_timestamp() {
         let _ = Timestamp::new(i64::MIN) - Timestamp::new(1);
+    }
+
+    #[test]
+    #[should_panic = "set contains duplicates"]
+    fn test_column_set_duplicates() {
+        ColumnSet::new([ColumnId::new(1), ColumnId::new(2), ColumnId::new(1)]);
     }
 }

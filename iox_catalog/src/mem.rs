@@ -13,19 +13,15 @@ use crate::{
 use async_trait::async_trait;
 use data_types::{
     Column, ColumnId, ColumnType, KafkaPartition, KafkaTopic, KafkaTopicId, Namespace, NamespaceId,
-    ParquetFile, ParquetFileId, ParquetFileParams, ParquetFileWithMetadata, Partition, PartitionId,
-    PartitionInfo, PartitionKey, ProcessedTombstone, QueryPool, QueryPoolId, SequenceNumber,
-    Sequencer, SequencerId, Table, TableId, TablePartition, Timestamp, Tombstone, TombstoneId,
+    ParquetFile, ParquetFileId, ParquetFileParams, Partition, PartitionId, PartitionInfo,
+    PartitionKey, ProcessedTombstone, QueryPool, QueryPoolId, SequenceNumber, Sequencer,
+    SequencerId, Table, TableId, TablePartition, Timestamp, Tombstone, TombstoneId,
+    FILE_NON_OVERLAPPED_COMAPCTION_LEVEL,
 };
 use iox_time::{SystemProvider, TimeProvider};
 use observability_deps::tracing::warn;
 use sqlx::types::Uuid;
-use std::{
-    collections::{BTreeMap, HashSet},
-    convert::TryFrom,
-    fmt::Formatter,
-    sync::Arc,
-};
+use std::{collections::HashSet, convert::TryFrom, fmt::Formatter, sync::Arc};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// In-memory catalog that implements the `RepoCollection` and individual repo traits from
@@ -64,7 +60,6 @@ struct MemCollections {
     partitions: Vec<Partition>,
     tombstones: Vec<Tombstone>,
     parquet_files: Vec<ParquetFile>,
-    parquet_file_metadata: BTreeMap<ParquetFileId, Vec<u8>>,
     processed_tombstones: Vec<ProcessedTombstone>,
 }
 
@@ -332,7 +327,7 @@ impl NamespaceRepo for MemTxn {
                 n.max_tables = new_max;
                 Ok(n.clone())
             }
-            None => Err(Error::NamespaceNotFound {
+            None => Err(Error::NamespaceNotFoundByName {
                 name: name.to_string(),
             }),
         }
@@ -345,7 +340,7 @@ impl NamespaceRepo for MemTxn {
                 n.max_columns_per_table = new_max;
                 Ok(n.clone())
             }
-            None => Err(Error::NamespaceNotFound {
+            None => Err(Error::NamespaceNotFoundByName {
                 name: name.to_string(),
             }),
         }
@@ -364,7 +359,7 @@ impl TableRepo for MemTxn {
             .iter()
             .find(|n| n.id == namespace_id)
             .cloned()
-            .ok_or_else(|| Error::NamespaceNotFound {
+            .ok_or_else(|| Error::NamespaceNotFoundByName {
                 // we're never going to use this error, this is just for flow control,
                 // so it doesn't matter that we only have the ID, not the name
                 name: "".to_string(),
@@ -497,7 +492,7 @@ impl ColumnRepo for MemTxn {
                     .iter()
                     .find(|n| n.id == t.namespace_id)
                     .cloned()
-                    .ok_or_else(|| Error::NamespaceNotFound {
+                    .ok_or_else(|| Error::NamespaceNotFoundByName {
                         // we're never going to use this error, this is just for flow control,
                         // so it doesn't matter that we only have the ID, not the name
                         name: "".to_string(),
@@ -577,6 +572,19 @@ impl ColumnRepo for MemTxn {
             .columns
             .iter()
             .filter(|c| table_ids.contains(&c.table_id))
+            .cloned()
+            .collect();
+
+        Ok(columns)
+    }
+
+    async fn list_by_table_id(&mut self, table_id: TableId) -> Result<Vec<Column>> {
+        let stage = self.stage();
+
+        let columns: Vec<_> = stage
+            .columns
+            .iter()
+            .filter(|c| c.table_id == table_id)
             .cloned()
             .collect();
 
@@ -947,10 +955,10 @@ impl ParquetFileRepo for MemTxn {
             min_time,
             max_time,
             file_size_bytes,
-            parquet_metadata,
             row_count,
             compaction_level,
             created_at,
+            column_set,
         } = parquet_file_params;
 
         if stage
@@ -977,14 +985,11 @@ impl ParquetFileRepo for MemTxn {
             file_size_bytes,
             compaction_level,
             created_at,
+            column_set,
         };
-
-        stage
-            .parquet_file_metadata
-            .insert(parquet_file.id, parquet_metadata);
-
         stage.parquet_files.push(parquet_file);
-        Ok(*stage.parquet_files.last().unwrap())
+
+        Ok(stage.parquet_files.last().unwrap().clone())
     }
 
     async fn flag_for_delete(&mut self, id: ParquetFileId) -> Result<()> {
@@ -1047,31 +1052,6 @@ impl ParquetFileRepo for MemTxn {
         Ok(parquet_files)
     }
 
-    async fn list_by_table_not_to_delete_with_metadata(
-        &mut self,
-        table_id: TableId,
-    ) -> Result<Vec<ParquetFileWithMetadata>> {
-        let stage = self.stage();
-
-        let parquet_files: Vec<_> = stage
-            .parquet_files
-            .iter()
-            .filter(|f| table_id == f.table_id && f.to_delete.is_none())
-            .cloned()
-            .map(|f| {
-                ParquetFileWithMetadata::new(
-                    f,
-                    stage
-                        .parquet_file_metadata
-                        .get(&f.id)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-        Ok(parquet_files)
-    }
-
     async fn delete_old(&mut self, older_than: Timestamp) -> Result<Vec<ParquetFile>> {
         let stage = self.stage();
 
@@ -1080,10 +1060,6 @@ impl ParquetFileRepo for MemTxn {
         );
 
         stage.parquet_files = keep;
-
-        for delete in &delete {
-            stage.parquet_file_metadata.remove(&delete.id);
-        }
 
         Ok(delete)
     }
@@ -1101,7 +1077,7 @@ impl ParquetFileRepo for MemTxn {
             .collect())
     }
 
-    async fn level_1(
+    async fn level_2(
         &mut self,
         table_partition: TablePartition,
         min_time: Timestamp,
@@ -1116,7 +1092,7 @@ impl ParquetFileRepo for MemTxn {
                 f.sequencer_id == table_partition.sequencer_id
                     && f.table_id == table_partition.table_id
                     && f.partition_id == table_partition.partition_id
-                    && f.compaction_level == 1
+                    && f.compaction_level == FILE_NON_OVERLAPPED_COMAPCTION_LEVEL
                     && f.to_delete.is_none()
                     && ((f.min_time <= min_time && f.max_time >= min_time)
                         || (f.min_time > min_time && f.min_time <= max_time))
@@ -1139,31 +1115,7 @@ impl ParquetFileRepo for MemTxn {
             .collect())
     }
 
-    async fn list_by_partition_not_to_delete_with_metadata(
-        &mut self,
-        partition_id: PartitionId,
-    ) -> Result<Vec<ParquetFileWithMetadata>> {
-        let stage = self.stage();
-
-        Ok(stage
-            .parquet_files
-            .iter()
-            .filter(|f| f.partition_id == partition_id && f.to_delete.is_none())
-            .cloned()
-            .map(|f| {
-                ParquetFileWithMetadata::new(
-                    f,
-                    stage
-                        .parquet_file_metadata
-                        .get(&f.id)
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect())
-    }
-
-    async fn update_to_level_1(
+    async fn update_to_level_2(
         &mut self,
         parquet_file_ids: &[ParquetFileId],
     ) -> Result<Vec<ParquetFileId>> {
@@ -1176,7 +1128,7 @@ impl ParquetFileRepo for MemTxn {
             .iter_mut()
             .filter(|p| parquet_file_ids.contains(&p.id))
         {
-            f.compaction_level = 1;
+            f.compaction_level = FILE_NON_OVERLAPPED_COMAPCTION_LEVEL;
             updated.push(f.id);
         }
 
@@ -1187,16 +1139,6 @@ impl ParquetFileRepo for MemTxn {
         let stage = self.stage();
 
         Ok(stage.parquet_files.iter().any(|f| f.id == id))
-    }
-
-    async fn parquet_metadata(&mut self, id: ParquetFileId) -> Result<Vec<u8>> {
-        let stage = self.stage();
-
-        stage
-            .parquet_file_metadata
-            .get(&id)
-            .cloned()
-            .ok_or(Error::ParquetRecordNotFound { id })
     }
 
     async fn count(&mut self) -> Result<i64> {

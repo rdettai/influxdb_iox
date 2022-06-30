@@ -95,7 +95,10 @@ impl object_store_service_server::ObjectStoreService for ObjectStoreService {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use data_types::{KafkaPartition, ParquetFileParams, SequenceNumber, Timestamp};
+    use data_types::{
+        ColumnId, ColumnSet, KafkaPartition, ParquetFileParams, SequenceNumber, Timestamp,
+        INITIAL_COMPACTION_LEVEL,
+    };
     use generated_types::influxdata::iox::object_store::v1::object_store_service_server::ObjectStoreService;
     use iox_catalog::mem::MemCatalog;
     use object_store::{memory::InMemory, ObjectStore};
@@ -150,10 +153,10 @@ mod tests {
                 min_time: Timestamp::new(1),
                 max_time: Timestamp::new(5),
                 file_size_bytes: 2343,
-                parquet_metadata: vec![],
                 row_count: 29,
-                compaction_level: 0,
+                compaction_level: INITIAL_COMPACTION_LEVEL,
                 created_at: Timestamp::new(2343),
+                column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
             };
 
             p1 = repos.parquet_files().create(p1params).await.unwrap();

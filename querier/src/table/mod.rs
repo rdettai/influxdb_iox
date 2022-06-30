@@ -5,7 +5,7 @@ use crate::{
     ingester::{self, IngesterPartition},
     IngesterConnection,
 };
-use data_types::{PartitionId, TableId};
+use data_types::{KafkaPartition, PartitionId, TableId};
 use futures::join;
 use iox_query::{provider::ChunkPruner, QueryChunk};
 use observability_deps::tracing::debug;
@@ -52,6 +52,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Table representation for the querier.
 #[derive(Debug)]
 pub struct QuerierTable {
+    /// Sequencers responsible for the table's data that need to be queried for unpersisted data
+    sequencer_ids: Vec<KafkaPartition>,
+
     /// Namespace the table is in
     namespace_name: Arc<str>,
 
@@ -65,7 +68,7 @@ pub struct QuerierTable {
     schema: Arc<Schema>,
 
     /// Connection to ingester
-    ingester_connection: Arc<dyn IngesterConnection>,
+    ingester_connection: Option<Arc<dyn IngesterConnection>>,
 
     /// Interface to create chunks for this table.
     chunk_adapter: Arc<ChunkAdapter>,
@@ -77,11 +80,12 @@ pub struct QuerierTable {
 impl QuerierTable {
     /// Create new table.
     pub fn new(
+        sequencer_ids: Vec<KafkaPartition>,
         namespace_name: Arc<str>,
         id: TableId,
         table_name: Arc<str>,
         schema: Arc<Schema>,
-        ingester_connection: Arc<dyn IngesterConnection>,
+        ingester_connection: Option<Arc<dyn IngesterConnection>>,
         chunk_adapter: Arc<ChunkAdapter>,
     ) -> Self {
         let reconciler = Reconciler::new(
@@ -91,6 +95,7 @@ impl QuerierTable {
         );
 
         Self {
+            sequencer_ids,
             namespace_name,
             table_name,
             id,
@@ -171,51 +176,56 @@ impl QuerierTable {
 
     /// Get partitions from ingesters.
     async fn ingester_partitions(&self, predicate: &Predicate) -> Result<Vec<IngesterPartition>> {
-        // For now, ask for *all* columns in the table from the ingester (need
-        // at least all pk (time, tag) columns for
-        // deduplication.
-        //
-        // As a future optimization, might be able to fetch only
-        // fields that are needed in query
-        let columns: Vec<String> = self
-            .schema
-            .iter()
-            .map(|(_, f)| f.name().to_string())
-            .collect();
+        if let Some(ingester_connection) = &self.ingester_connection {
+            // For now, ask for *all* columns in the table from the ingester (need
+            // at least all pk (time, tag) columns for
+            // deduplication.
+            //
+            // As a future optimization, might be able to fetch only
+            // fields that are needed in query
+            let columns: Vec<String> = self
+                .schema
+                .iter()
+                .map(|(_, f)| f.name().to_string())
+                .collect();
 
-        // get any chunks from the ingster
-        let partitions_result = self
-            .ingester_connection
-            .partitions(
-                Arc::clone(&self.namespace_name),
-                Arc::clone(&self.table_name),
-                columns,
-                predicate,
-                Arc::clone(&self.schema),
-            )
-            .await
-            .context(GettingIngesterPartitionsSnafu);
+            // get any chunks from the ingester
+            let partitions_result = ingester_connection
+                .partitions(
+                    &self.sequencer_ids,
+                    Arc::clone(&self.namespace_name),
+                    Arc::clone(&self.table_name),
+                    columns,
+                    predicate,
+                    Arc::clone(&self.schema),
+                )
+                .await
+                .context(GettingIngesterPartitionsSnafu);
 
-        let partitions = partitions_result?;
+            let partitions = partitions_result?;
 
-        // check that partitions from ingesters don't overlap
-        let mut seen = HashMap::with_capacity(partitions.len());
-        for partition in &partitions {
-            match seen.entry(partition.partition_id()) {
-                Entry::Occupied(o) => {
-                    return Err(Error::IngestersOverlap {
-                        ingester1: Arc::clone(o.get()),
-                        ingester2: Arc::clone(partition.ingester()),
-                        partition: partition.partition_id(),
-                    })
-                }
-                Entry::Vacant(v) => {
-                    v.insert(Arc::clone(partition.ingester()));
+            // check that partitions from ingesters don't overlap
+            let mut seen = HashMap::with_capacity(partitions.len());
+            for partition in &partitions {
+                match seen.entry(partition.partition_id()) {
+                    Entry::Occupied(o) => {
+                        return Err(Error::IngestersOverlap {
+                            ingester1: Arc::clone(o.get()),
+                            ingester2: Arc::clone(partition.ingester()),
+                            partition: partition.partition_id(),
+                        })
+                    }
+                    Entry::Vacant(v) => {
+                        v.insert(Arc::clone(partition.ingester()));
+                    }
                 }
             }
-        }
 
-        Ok(partitions)
+            Ok(partitions)
+        } else {
+            // No ingesters are configured
+            Ok(vec![])
+        }
     }
 
     /// Handles invalidating parquet and tombstone caches if the
@@ -315,8 +325,10 @@ mod tests {
             .create_partition("k")
             .await;
 
-        table1.create_column("foo", ColumnType::I64).await;
-        table2.create_column("foo", ColumnType::I64).await;
+        table1.create_column("time", ColumnType::Time).await;
+        table1.create_column("foo", ColumnType::F64).await;
+        table2.create_column("time", ColumnType::Time).await;
+        table2.create_column("foo", ColumnType::F64).await;
 
         let querier_table = TestQuerierTable::new(&catalog, &table1).await;
 
@@ -442,7 +454,7 @@ mod tests {
             .create_parquet_file_with_min_max("table foo=1 11", 1, 2, now_nanos(), now_nanos())
             .await;
 
-        let builder = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition);
+        let builder = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition);
         let ingester_partition =
             builder.build_with_max_parquet_sequence_number(Some(SequenceNumber::new(1)));
 
@@ -469,6 +481,8 @@ mod tests {
             .with_sequencer(&sequencer)
             .create_partition("k2")
             .await;
+        table.create_column("time", ColumnType::Time).await;
+        table.create_column("foo", ColumnType::F64).await;
 
         // kept because max sequence number <= 2
         let file1 = partition1
@@ -521,8 +535,8 @@ mod tests {
 
         let ingester_chunk_id1 = u128::MAX - 1;
 
-        let builder1 = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition1);
-        let builder2 = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition2);
+        let builder1 = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition1);
+        let builder2 = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition2);
 
         let querier_table = TestQuerierTable::new(&catalog, &table)
             .await
@@ -599,8 +613,8 @@ mod tests {
                 .unwrap(),
         );
 
-        let builder1 = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition1);
-        let builder2 = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition2);
+        let builder1 = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition1);
+        let builder2 = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition2);
 
         let querier_table = TestQuerierTable::new(&catalog, &table)
             .await
@@ -651,8 +665,8 @@ mod tests {
         let partition = table.with_sequencer(&sequencer).create_partition("k").await;
         let schema = make_schema(&table).await;
 
-        let builder = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition)
-            .with_lp(["table foo=1i 1"]);
+        let builder = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition)
+            .with_lp(["table foo=1 1"]);
 
         // Parquet file between with max sequence number 2
         partition
@@ -706,8 +720,8 @@ mod tests {
         // Expect 1 chunk with with one delete predicate
         let querier_table = TestQuerierTable::new(&catalog, &table).await;
 
-        let builder = IngesterPartitionBuilder::new(&ns, &table, &schema, &sequencer, &partition)
-            .with_lp(["table foo=1i 1"]);
+        let builder = IngesterPartitionBuilder::new(&table, &schema, &sequencer, &partition)
+            .with_lp(["table foo=1 1"]);
 
         // parquet file with max sequence number 1
         partition
@@ -756,11 +770,12 @@ mod tests {
 
     /// Adds a "foo" column to the table and returns the created schema
     async fn make_schema(table: &Arc<TestTable>) -> Arc<Schema> {
-        table.create_column("foo", ColumnType::I64).await;
+        table.create_column("foo", ColumnType::F64).await;
+        table.create_column("time", ColumnType::Time).await;
         // create corresponding schema
         Arc::new(
             SchemaBuilder::new()
-                .influx_field("foo", InfluxFieldType::Integer)
+                .influx_field("foo", InfluxFieldType::Float)
                 .timestamp()
                 .build()
                 .unwrap(),
@@ -809,6 +824,8 @@ mod tests {
 
             self.querier_table
                 .ingester_connection
+                .as_ref()
+                .unwrap()
                 .as_any()
                 .downcast_ref::<MockIngesterConnection>()
                 .unwrap()

@@ -1,10 +1,13 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, StringBuilder, TimestampNanosecondBuilder},
     record_batch::RecordBatch,
 };
-use data_types::{NamespaceId, PartitionId, SequenceNumber, SequencerId, TableId, Timestamp};
+use data_types::{
+    ColumnId, NamespaceId, PartitionId, SequenceNumber, SequencerId, TableId, Timestamp,
+    FILE_NON_OVERLAPPED_COMAPCTION_LEVEL,
+};
 use iox_time::Time;
 use object_store::DynObjectStore;
 use parquet_file::{metadata::IoxMetadata, storage::ParquetStorage};
@@ -45,7 +48,7 @@ async fn test_decoded_iox_metadata() {
         partition_key: "potato".into(),
         min_sequence_number: SequenceNumber::new(10),
         max_sequence_number: SequenceNumber::new(11),
-        compaction_level: 1,
+        compaction_level: FILE_NON_OVERLAPPED_COMAPCTION_LEVEL,
         sort_key: None,
     };
 
@@ -138,7 +141,7 @@ async fn test_empty_parquet_file_panic() {
         partition_key: "potato".into(),
         min_sequence_number: SequenceNumber::new(10),
         max_sequence_number: SequenceNumber::new(11),
-        compaction_level: 1,
+        compaction_level: FILE_NON_OVERLAPPED_COMAPCTION_LEVEL,
         sort_key: None,
     };
 
@@ -216,7 +219,7 @@ async fn test_decoded_many_columns_with_null_cols_iox_metadata() {
         partition_key: "potato".into(),
         min_sequence_number: SequenceNumber::new(10),
         max_sequence_number: SequenceNumber::new(11),
-        compaction_level: 1,
+        compaction_level: FILE_NON_OVERLAPPED_COMAPCTION_LEVEL,
         sort_key: Some(sort_key),
     };
     //println!("IoxMetadata: {:#?}", meta);
@@ -296,7 +299,7 @@ async fn test_derive_parquet_file_params() {
         partition_key: "potato".into(),
         min_sequence_number: SequenceNumber::new(10),
         max_sequence_number: SequenceNumber::new(11),
-        compaction_level: 1,
+        compaction_level: FILE_NON_OVERLAPPED_COMAPCTION_LEVEL,
         sort_key: None,
     };
 
@@ -322,7 +325,13 @@ async fn test_derive_parquet_file_params() {
 
     // Use the IoxParquetMetaData and original IoxMetadata to derive a
     // ParquetFileParams.
-    let catalog_data = meta.to_parquet_file(partition_id, file_size, &iox_parquet_meta);
+    let column_id_map: HashMap<String, ColumnId> = HashMap::from([
+        ("some_field".into(), ColumnId::new(1)),
+        ("time".into(), ColumnId::new(2)),
+    ]);
+    let catalog_data = meta.to_parquet_file(partition_id, file_size, &iox_parquet_meta, |name| {
+        *column_id_map.get(name).unwrap()
+    });
 
     // And verify the resulting statistics used in the catalog.
     //

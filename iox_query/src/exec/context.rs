@@ -9,6 +9,7 @@ use arrow::record_batch::RecordBatch;
 
 use datafusion::{
     catalog::catalog::CatalogProvider,
+    config::OPT_COALESCE_TARGET_BATCH_SIZE,
     execution::{
         context::{QueryPlanner, SessionState, TaskContext},
         runtime_env::RuntimeEnv,
@@ -88,9 +89,10 @@ impl QueryPlanner for IOxQueryPlanner {
 /// Physical planner for InfluxDB IOx extension plans
 struct IOxExtensionPlanner {}
 
+#[async_trait]
 impl ExtensionPlanner for IOxExtensionPlanner {
     /// Create a physical plan for an extension node
-    fn plan_extension(
+    async fn plan_extension(
         &self,
         planner: &dyn PhysicalPlanner,
         node: &dyn UserDefinedLogicalNode,
@@ -124,16 +126,22 @@ impl ExtensionPlanner for IOxExtensionPlanner {
                 "Inconsistent number of physical inputs"
             );
 
-            let split_expr = planner.create_physical_expr(
-                stream_split.split_expr(),
-                logical_inputs[0].schema(),
-                &physical_inputs[0].schema(),
-                session_state,
-            )?;
+            let split_exprs = stream_split
+                .split_exprs()
+                .iter()
+                .map(|e| {
+                    planner.create_physical_expr(
+                        e,
+                        logical_inputs[0].schema(),
+                        &physical_inputs[0].schema(),
+                        session_state,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
 
             Some(Arc::new(StreamSplitExec::new(
                 Arc::clone(&physical_inputs[0]),
-                split_expr,
+                split_exprs,
             )) as Arc<dyn ExecutionPlan>)
         } else {
             None
@@ -170,11 +178,17 @@ impl fmt::Debug for IOxSessionConfig {
 }
 
 const BATCH_SIZE: usize = 1000;
+const COALESCE_BATCH_SIZE: usize = 500;
 
 impl IOxSessionConfig {
     pub(super) fn new(exec: DedicatedExecutor, runtime: Arc<RuntimeEnv>) -> Self {
         let session_config = SessionConfig::new()
             .with_batch_size(BATCH_SIZE)
+            // TODO add function in SessionCofig
+            .set_u64(
+                OPT_COALESCE_TARGET_BATCH_SIZE,
+                COALESCE_BATCH_SIZE.try_into().unwrap(),
+            )
             .create_default_catalog_and_schema(true)
             .with_information_schema(true)
             .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_SCHEMA);

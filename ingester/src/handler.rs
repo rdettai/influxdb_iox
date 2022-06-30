@@ -3,7 +3,6 @@
 use crate::{
     data::{IngesterData, IngesterQueryResponse, SequencerData},
     lifecycle::{run_lifecycle_manager, LifecycleConfig, LifecycleManager},
-    partioning::DefaultPartitioner,
     poison::PoisonCabinet,
     querier_handler::prepare_data_to_querier,
     stream_handler::{
@@ -156,7 +155,6 @@ impl IngestHandlerImpl {
             object_store,
             catalog,
             sequencers,
-            Arc::new(DefaultPartitioner::default()),
             exec,
             BackoffConfig::default(),
         ));
@@ -326,7 +324,8 @@ impl IngestHandler for IngestHandlerImpl {
         if let Some(delta) = self.time_provider.now().checked_duration_since(t) {
             match &res {
                 Ok(_) => self.query_duration_success.record(delta),
-                Err(crate::querier_handler::Error::TableNotFound { .. }) => {
+                Err(crate::querier_handler::Error::TableNotFound { .. })
+                | Err(crate::querier_handler::Error::NamespaceNotFound { .. }) => {
                     self.query_duration_error_not_found.record(delta)
                 }
                 Err(_) => self.query_duration_error_other.record(delta),

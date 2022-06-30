@@ -19,6 +19,12 @@ pub enum ParseError {
         source: std::io::Error,
     },
 
+    #[snafu(display("Unable to create local store {:?}: {}", path, source))]
+    CreateLocalFileSystem {
+        path: PathBuf,
+        source: object_store::Error,
+    },
+
     #[snafu(display(
         "Specified {:?} for the object store, required configuration missing for {}",
         object_store,
@@ -388,7 +394,10 @@ pub fn make_object_store(config: &ObjectStoreConfig) -> Result<Arc<DynObjectStor
             Some(db_dir) => {
                 fs::create_dir_all(db_dir)
                     .context(CreatingDatabaseDirectorySnafu { path: db_dir })?;
-                Ok(Arc::new(object_store::local::LocalFileSystem::new(&db_dir)))
+
+                let store = object_store::local::LocalFileSystem::new_with_prefix(db_dir)
+                    .context(CreateLocalFileSystemSnafu { path: db_dir })?;
+                Ok(Arc::new(store))
             }
             None => MissingObjectStoreConfigSnafu {
                 object_store: ObjectStoreType::File,
@@ -432,6 +441,7 @@ pub async fn check_object_store(object_store: &DynObjectStore) -> Result<(), Che
 #[cfg(test)]
 mod tests {
     use clap::StructOpt;
+    use std::env;
     use tempfile::TempDir;
 
     use super::*;
@@ -578,15 +588,20 @@ mod tests {
         ])
         .unwrap();
 
-        let object_store = make_object_store(&config).unwrap();
-        assert_eq!(
-            object_store.to_string(),
-            format!("LocalFileSystem({})", root_path)
+        let object_store = make_object_store(&config).unwrap().to_string();
+        assert!(
+            object_store.starts_with("LocalFileSystem"),
+            "{}",
+            object_store
         )
     }
 
     #[test]
     fn file_config_missing_params() {
+        // this test tests for failure to configure the object store because of data-dir configuration missing
+        // if the INFLUXDB_IOX_DB_DIR env variable is set, the test fails because the configuration is
+        // actually present.
+        env::remove_var("INFLUXDB_IOX_DB_DIR");
         let config =
             ObjectStoreConfig::try_parse_from(&["server", "--object-store", "file"]).unwrap();
 

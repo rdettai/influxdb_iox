@@ -1,10 +1,7 @@
 //! Data for the lifecycle of the Ingester
 
 use crate::{
-    compact::compact_persisting_batch,
-    lifecycle::LifecycleHandle,
-    partioning::{Partitioner, PartitionerError},
-    querier_handler::query,
+    compact::compact_persisting_batch, lifecycle::LifecycleHandle, querier_handler::query,
 };
 use arrow::{error::ArrowError, record_batch::RecordBatch};
 use arrow_util::optimize::{optimize_record_batch, optimize_schema};
@@ -17,7 +14,7 @@ use data_types::{
 use datafusion::physical_plan::SendableRecordBatchStream;
 use dml::DmlOperation;
 use futures::{Stream, StreamExt};
-use iox_catalog::interface::Catalog;
+use iox_catalog::interface::{get_table_schema_by_id, Catalog};
 use iox_query::exec::Executor;
 use iox_time::SystemProvider;
 use metric::U64Counter;
@@ -43,26 +40,8 @@ use self::triggers::TestTriggers;
 #[derive(Debug, Snafu)]
 #[allow(missing_copy_implementations, missing_docs)]
 pub enum Error {
-    #[snafu(display("Error while reading Topic {}", name))]
-    ReadTopic {
-        source: iox_catalog::interface::Error,
-        name: String,
-    },
-
-    #[snafu(display("Error while reading Kafka Partition id {}", id.get()))]
-    ReadSequencer {
-        source: iox_catalog::interface::Error,
-        id: KafkaPartition,
-    },
-
     #[snafu(display("Sequencer {} not found in data map", sequencer_id))]
     SequencerNotFound { sequencer_id: SequencerId },
-
-    #[snafu(display(
-        "Sequencer not found for kafka partition {} in data map",
-        kafka_partition
-    ))]
-    SequencerForPartitionNotFound { kafka_partition: KafkaPartition },
 
     #[snafu(display("Namespace {} not found in catalog", namespace))]
     NamespaceNotFound { namespace: String },
@@ -78,29 +57,11 @@ pub enum Error {
         source: iox_catalog::interface::Error,
     },
 
-    #[snafu(display("The persisting is in progress. Cannot accept more persisting batch"))]
-    PersistingNotEmpty,
-
-    #[snafu(display("Nothing in the Persisting list to get removed"))]
-    PersistingEmpty,
-
-    #[snafu(display(
-        "The given batch does not match any in the Persisting list. \
-        Nothing is removed from the Persisting list"
-    ))]
-    PersistingNotMatch,
-
-    #[snafu(display("Cannot partition data: {}", source))]
-    Partitioning { source: PartitionerError },
-
     #[snafu(display("Snapshot error: {}", source))]
     Snapshot { source: mutable_batch::Error },
 
     #[snafu(display("Error while filtering columns from snapshot: {}", source))]
     FilterColumn { source: arrow::error::ArrowError },
-
-    #[snafu(display("Partition not found: {}", partition_id))]
-    PartitionNotFound { partition_id: PartitionId },
 
     #[snafu(display("Error while copying buffer to snapshot: {}", source))]
     BufferToSnapshot { source: mutable_batch::Error },
@@ -126,9 +87,6 @@ pub struct IngesterData {
     /// get ingested.
     sequencers: BTreeMap<SequencerId, SequencerData>,
 
-    /// Partitioner.
-    partitioner: Arc<dyn Partitioner>,
-
     /// Executor for running queries and compacting and persisting
     exec: Arc<Executor>,
 
@@ -142,7 +100,6 @@ impl IngesterData {
         object_store: Arc<DynObjectStore>,
         catalog: Arc<dyn Catalog>,
         sequencers: BTreeMap<SequencerId, SequencerData>,
-        partitioner: Arc<dyn Partitioner>,
         exec: Arc<Executor>,
         backoff_config: BackoffConfig,
     ) -> Self {
@@ -150,7 +107,6 @@ impl IngesterData {
             store: ParquetStorage::new(object_store),
             catalog,
             sequencers,
-            partitioner,
             exec,
             backoff_config,
         }
@@ -194,7 +150,6 @@ impl IngesterData {
                 sequencer_id,
                 self.catalog.as_ref(),
                 lifecycle_handle,
-                self.partitioner.as_ref(),
                 &self.exec,
             )
             .await
@@ -279,6 +234,21 @@ impl Persister for IngesterData {
             });
         debug!(?partition_id, ?partition_info, "Persisting");
 
+        // lookup column IDs from catalog
+        // TODO: this can be removed once the ingester uses column IDs internally as well
+        let table_schema = Backoff::new(&self.backoff_config)
+            .retry_all_errors("get table schema", || async {
+                let mut repos = self.catalog.repositories().await;
+                let table = repos
+                    .tables()
+                    .get_by_namespace_and_name(namespace.namespace_id, &partition_info.table_name)
+                    .await?
+                    .expect("table not found in catalog");
+                get_table_schema_by_id(table.id, repos.as_mut()).await
+            })
+            .await
+            .expect("retry forever");
+
         let persisting_batch = namespace.snapshot_to_persisting(&partition_info).await;
 
         if let Some(persisting_batch) = persisting_batch {
@@ -319,7 +289,9 @@ impl Persister for IngesterData {
                 .expect("unexpected fatal persist error");
 
             // Add the parquet file to the catalog until succeed
-            let parquet_file = iox_meta.to_parquet_file(partition_id, file_size, &md);
+            let parquet_file = iox_meta.to_parquet_file(partition_id, file_size, &md, |name| {
+                table_schema.columns.get(name).expect("Unknown column").id
+            });
             Backoff::new(&self.backoff_config)
                 .retry_all_errors("add parquet file to catalog", || async {
                     let mut repos = self.catalog.repositories().await;
@@ -446,7 +418,6 @@ impl SequencerData {
         sequencer_id: SequencerId,
         catalog: &dyn Catalog,
         lifecycle_handle: &dyn LifecycleHandle,
-        partitioner: &dyn Partitioner,
         executor: &Executor,
     ) -> Result<bool> {
         let namespace_data = match self.namespace(dml_operation.namespace()) {
@@ -463,7 +434,6 @@ impl SequencerData {
                 sequencer_id,
                 catalog,
                 lifecycle_handle,
-                partitioner,
                 executor,
             )
             .await
@@ -613,7 +583,6 @@ impl NamespaceData {
         sequencer_id: SequencerId,
         catalog: &dyn Catalog,
         lifecycle_handle: &dyn LifecycleHandle,
-        partitioner: &dyn Partitioner,
         executor: &Executor,
     ) -> Result<bool> {
         let sequence_number = dml_operation
@@ -633,6 +602,12 @@ impl NamespaceData {
             DmlOperation::Write(write) => {
                 let mut pause_writes = false;
 
+                // Extract the partition key derived by the router.
+                let partition_key = write
+                    .partition_key()
+                    .expect("no partition key in dml write")
+                    .clone();
+
                 for (t, b) in write.into_tables() {
                     let table_data = match self.table_data(&t) {
                         Some(t) => t,
@@ -646,10 +621,10 @@ impl NamespaceData {
                             .buffer_table_write(
                                 sequence_number,
                                 b,
+                                partition_key.clone(),
                                 sequencer_id,
                                 catalog,
                                 lifecycle_handle,
-                                partitioner,
                             )
                             .await?;
                         pause_writes = pause_writes || should_pause;
@@ -901,15 +876,11 @@ impl TableData {
         &mut self,
         sequence_number: SequenceNumber,
         batch: MutableBatch,
+        partition_key: PartitionKey,
         sequencer_id: SequencerId,
         catalog: &dyn Catalog,
         lifecycle_handle: &dyn LifecycleHandle,
-        partitioner: &dyn Partitioner,
     ) -> Result<bool> {
-        let partition_key = partitioner
-            .partition_key(&batch)
-            .context(PartitioningSnafu)?;
-
         let partition_data = match self.partition_data.get_mut(&partition_key) {
             Some(p) => p,
             None => {
@@ -1678,21 +1649,19 @@ mod tests {
     use super::*;
     use crate::{
         lifecycle::{LifecycleConfig, LifecycleManager},
-        partioning::DefaultPartitioner,
         test_util::create_tombstone,
     };
     use arrow::datatypes::SchemaRef;
     use arrow_util::assert_batches_sorted_eq;
     use assert_matches::assert_matches;
     use data_types::{
-        NamespaceSchema, NonEmptyString, ParquetFileParams, Sequence, TimestampRange,
+        ColumnId, ColumnSet, NamespaceSchema, NonEmptyString, ParquetFileParams, Sequence,
+        TimestampRange, INITIAL_COMPACTION_LEVEL,
     };
     use datafusion::physical_plan::RecordBatchStream;
     use dml::{DmlDelete, DmlMeta, DmlWrite};
     use futures::TryStreamExt;
-    use iox_catalog::{
-        interface::INITIAL_COMPACTION_LEVEL, mem::MemCatalog, validate_or_insert_schema,
-    };
+    use iox_catalog::{mem::MemCatalog, validate_or_insert_schema};
     use iox_time::Time;
     use metric::{MetricObserver, Observation};
     use mutable_batch_lp::{lines_to_batches, test_helpers::lp_to_mutable_batch};
@@ -1807,7 +1776,6 @@ mod tests {
             Arc::clone(&object_store),
             Arc::clone(&catalog),
             sequencers,
-            Arc::new(DefaultPartitioner::default()),
             Arc::new(Executor::new(1)),
             BackoffConfig::default(),
         ));
@@ -1901,7 +1869,6 @@ mod tests {
             Arc::clone(&object_store),
             Arc::clone(&catalog),
             sequencers,
-            Arc::new(DefaultPartitioner::default()),
             Arc::new(Executor::new(1)),
             BackoffConfig::default(),
         ));
@@ -2097,7 +2064,6 @@ mod tests {
             Arc::clone(&object_store),
             Arc::clone(&catalog),
             sequencers,
-            Arc::new(DefaultPartitioner::default()),
             Arc::new(Executor::new(1)),
             BackoffConfig::default(),
         ));
@@ -2523,10 +2489,10 @@ mod tests {
             min_time: Timestamp::new(1),
             max_time: Timestamp::new(1),
             file_size_bytes: 0,
-            parquet_metadata: vec![],
             row_count: 0,
             compaction_level: INITIAL_COMPACTION_LEVEL,
             created_at: Timestamp::new(1),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         repos
             .parquet_files()
@@ -2556,7 +2522,6 @@ mod tests {
             Arc::clone(&metrics),
             Arc::new(SystemProvider::new()),
         );
-        let partitioner = DefaultPartitioner::default();
         let exec = Executor::new(1);
 
         let data = NamespaceData::new(namespace.id, &*metrics);
@@ -2568,7 +2533,6 @@ mod tests {
                 sequencer.id,
                 catalog.as_ref(),
                 &manager.handle(),
-                &partitioner,
                 &exec,
             )
             .await
@@ -2591,7 +2555,6 @@ mod tests {
             sequencer.id,
             catalog.as_ref(),
             &manager.handle(),
-            &partitioner,
             &exec,
         )
         .await
@@ -2642,7 +2605,6 @@ mod tests {
             Arc::clone(&object_store),
             Arc::clone(&catalog),
             sequencers,
-            Arc::new(DefaultPartitioner::default()),
             Arc::new(Executor::new(1)),
             BackoffConfig::default(),
         ));
