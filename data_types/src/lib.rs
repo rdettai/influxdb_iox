@@ -2085,6 +2085,13 @@ impl TimestampRange {
     pub fn start(&self) -> i64 {
         self.start
     }
+
+    /// Intersect with another range.
+    pub fn intersect(&self, other: &Self) -> Self {
+        let start = self.start.max(other.start);
+        let end = self.end.min(other.end).max(start);
+        Self::new(start, end)
+    }
 }
 
 /// Specifies a min/max timestamp value.
@@ -3220,5 +3227,37 @@ mod tests {
     #[should_panic(expected = "start (2) > end (1)")]
     fn test_timestamprange_invalid() {
         TimestampRange::new(2, 1);
+    }
+
+    #[test]
+    fn test_timestamprange_intersect() {
+        assert_eq!(
+            TimestampRange::new(13, 42).intersect(&TimestampRange::new(13, 42)),
+            TimestampRange::new(13, 42),
+        );
+        assert_eq!(
+            TimestampRange::new(13, 42).intersect(&TimestampRange::new(20, 25)),
+            TimestampRange::new(20, 25),
+        );
+        assert_eq!(
+            TimestampRange::new(20, 25).intersect(&TimestampRange::new(13, 42)),
+            TimestampRange::new(20, 25),
+        );
+        assert_eq!(
+            TimestampRange::new(13, 20).intersect(&TimestampRange::new(20, 42)),
+            TimestampRange::new(20, 20),
+        );
+        assert_eq!(
+            TimestampRange::new(20, 42).intersect(&TimestampRange::new(13, 20)),
+            TimestampRange::new(20, 20),
+        );
+        assert_eq!(
+            TimestampRange::new(13, 20).intersect(&TimestampRange::new(25, 42)),
+            TimestampRange::new(25, 25),
+        );
+        assert_eq!(
+            TimestampRange::new(25, 42).intersect(&TimestampRange::new(13, 20)),
+            TimestampRange::new(25, 25),
+        );
     }
 }
