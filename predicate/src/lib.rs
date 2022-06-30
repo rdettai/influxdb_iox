@@ -311,7 +311,11 @@ impl Predicate {
 
     /// Adds an expression to the list of general purpose predicates
     pub fn with_expr(mut self, expr: Expr) -> Self {
-        self.exprs.push(expr);
+        if let Some(tsrange) = expr_to_tsrange(&expr) {
+            self.range = Some(self.range.map(|r| r.intersect(&tsrange)).unwrap_or(tsrange));
+        } else {
+            self.exprs.push(expr);
+        }
         self
     }
 
@@ -440,6 +444,67 @@ impl Predicate {
             _ => false,
         }
     }
+}
+
+/// Try to extract a [`TimestampRange`] from an [`Expr`].
+fn expr_to_tsrange(expr: &Expr) -> Option<TimestampRange> {
+    if let Expr::BinaryExpr { left, op, right } = expr {
+        match (left.as_ref(), right.as_ref()) {
+            (Expr::Column(col), Expr::Literal(lit)) => {
+                return expr_to_tsrange_inner(col, lit, op, false);
+            }
+            (Expr::Literal(lit), Expr::Column(col)) => {
+                return expr_to_tsrange_inner(col, lit, op, true);
+            }
+            _ => (),
+        }
+    }
+
+    None
+}
+
+fn expr_to_tsrange_inner(
+    col: &datafusion::common::Column,
+    lit: &datafusion::common::ScalarValue,
+    op: &Operator,
+    flip: bool,
+) -> Option<TimestampRange> {
+    let is_time_col = col.relation.is_none() && (col.name == TIME_COLUMN_NAME);
+    if !is_time_col {
+        return None;
+    }
+
+    let ts = match lit {
+        datafusion::scalar::ScalarValue::TimestampNanosecond(Some(ts), None) => *ts,
+        _ => {
+            return None;
+        }
+    };
+
+    let normalized_op = match op {
+        Operator::Eq => Operator::Eq,
+        Operator::Lt if !flip => Operator::Lt,
+        Operator::GtEq if flip => Operator::Lt,
+        Operator::GtEq if !flip => Operator::GtEq,
+        Operator::Lt if flip => Operator::GtEq,
+        Operator::LtEq if !flip => Operator::LtEq,
+        Operator::Gt if flip => Operator::LtEq,
+        Operator::Gt if !flip => Operator::Gt,
+        Operator::LtEq if flip => Operator::Gt,
+        _ => {
+            return None;
+        }
+    };
+
+    let range = match normalized_op {
+        Operator::Eq => TimestampRange::new(ts, ts.checked_add(1)?),
+        Operator::Lt => TimestampRange::new(MIN_NANO_TIME, ts),
+        Operator::LtEq => TimestampRange::new(MIN_NANO_TIME, ts.checked_add(1)?),
+        Operator::GtEq => TimestampRange::new(ts, MAX_NANO_TIME),
+        Operator::Gt => TimestampRange::new(ts.checked_add(1)?, MAX_NANO_TIME),
+        _ => unreachable!("op was normalized"),
+    };
+    Some(range)
 }
 
 // Wrapper around `Expr::BinaryExpr` where left input is known to be
