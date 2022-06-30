@@ -2064,7 +2064,7 @@ impl TimestampRange {
     /// # Panic
     /// Panics if `start > end`.
     pub fn new(start: i64, end: i64) -> Self {
-        debug_assert!(end >= start);
+        assert!(end >= start, "start ({start}) > end ({end})");
         let start = start.max(MIN_NANO_TIME);
         let end = end.min(MAX_NANO_TIME);
         Self { start, end }
@@ -3214,5 +3214,11 @@ mod tests {
     #[should_panic = "set contains duplicates"]
     fn test_column_set_duplicates() {
         ColumnSet::new(["foo", "bar", "foo"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "start (2) > end (1)")]
+    fn test_timestamprange_invalid() {
+        TimestampRange::new(2, 1);
     }
 }
