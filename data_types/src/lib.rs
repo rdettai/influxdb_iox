@@ -2050,12 +2050,19 @@ pub const MAX_NANO_TIME: i64 = i64::MAX - 1;
 pub struct TimestampRange {
     /// Start defines the inclusive lower bound. Minimum value is [MIN_NANO_TIME]
     start: i64,
-    /// End defines the inclusive upper bound. Maximum value is [MAX_NANO_TIME]
+    /// End defines the exclusive upper bound. Maximum value is [MAX_NANO_TIME]
     end: i64,
 }
 
 impl TimestampRange {
-    /// Create a new TimestampRange. Clamps to MIN_NANO_TIME/MAX_NANO_TIME.
+    /// Create a new TimestampRange.
+    ///
+    /// Takes an inclusive start and an exclusive end. You may create an empty range by setting `start = end`.
+    ///
+    /// Clamps to [`MIN_NANO_TIME`]/[`MAX_NANO_TIME`].
+    ///
+    /// # Panic
+    /// Panics if `start > end`.
     pub fn new(start: i64, end: i64) -> Self {
         debug_assert!(end >= start);
         let start = start.max(MIN_NANO_TIME);
@@ -2069,12 +2076,12 @@ impl TimestampRange {
         self.start <= v && v < self.end
     }
 
-    /// Return the timestamp range's end.
+    /// Return the timestamp exclusive range's end.
     pub fn end(&self) -> i64 {
         self.end
     }
 
-    /// Return the timestamp range's start.
+    /// Return the timestamp inclusive range's start.
     pub fn start(&self) -> i64 {
         self.start
     }
@@ -2083,7 +2090,7 @@ impl TimestampRange {
 /// Specifies a min/max timestamp value.
 ///
 /// Note this differs subtlety (but critically) from a
-/// `TimestampRange` as the minimum and maximum values are included
+/// [`TimestampRange`] as the minimum and maximum values are included ([`TimestampRange`] has an exclusive end).
 #[derive(Clone, Debug, Copy)]
 pub struct TimestampMinMax {
     /// The minimum timestamp value
