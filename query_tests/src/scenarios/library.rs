@@ -1362,10 +1362,17 @@ impl DbSetup for Issue5023 {
             "swap,host=server01 in=3,out=4 1591894450000000000",
             "swap,host=server01,name=disk0 in=3,out=4 1591894460000000000",
             "swap,host=server01,name=disk1 in=3,out=4 1591894460000000000",
+            // the next lines were not part of the original issue but are there to test typed predicate against fields
+            "swap,host=server01,name=disk1 in=3,out=4,field_f64=60 1591894470000000000",
+            "swap,host=server01,name=disk1 in=3,out=4,field_f64=70 1591894480000000000",
+            "swap,host=server01,name=disk1 in=3,out=4,field_i64=1i 1591894490000000000",
+            "swap,host=server01,name=disk1 in=3,out=4,field_u64=1u 1591894500000000000",
+            "swap,host=server01,name=disk1 in=3,out=4,field_bool=true 1591894510000000000",
+            "swap,host=server01,name=disk1 in=3,out=4,field_string=\"foo\" 1591894520000000000",
         ];
 
         let delete_table_name = "swap";
-        let pred = DeletePredicate {
+        let pred1 = DeletePredicate {
             range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
             exprs: vec![DeleteExpr::new(
                 "name".to_string(),
@@ -1374,8 +1381,62 @@ impl DbSetup for Issue5023 {
             )],
         };
 
+        // the initial fix for this bug had an issue where it coerced every value in `<col> <op> <value>` to a string,
+        // which ultimately messed didn't filter out the data
+        let pred2 = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "field_f64".to_string(),
+                Op::Eq,
+                // deliberately use an integer value here, because this is what currently is produced by the untyped
+                // parser, see https://github.com/influxdata/influxdb_iox/issues/5034
+                Scalar::I64(60),
+            )],
+        };
+        let pred3 = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "field_f64".to_string(),
+                Op::Eq,
+                Scalar::F64((70.0).into()),
+            )],
+        };
+        let pred4 = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "field_i64".to_string(),
+                Op::Eq,
+                Scalar::I64(1),
+            )],
+        };
+        let pred5 = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "field_u64".to_string(),
+                Op::Eq,
+                // we don't parse unsigned integers at the moment, see https://github.com/influxdata/influxdb_iox/issues/5034
+                Scalar::I64(1),
+            )],
+        };
+        let pred6 = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "field_bool".to_string(),
+                Op::Eq,
+                Scalar::Bool(true),
+            )],
+        };
+        let pred7 = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "field_string".to_string(),
+                Op::Eq,
+                Scalar::String("foo".into()),
+            )],
+        };
+
         all_scenarios_for_one_chunk(
-            vec![&pred],
+            vec![&pred1, &pred2, &pred3, &pred4, &pred5, &pred6, &pred7],
             vec![],
             lp_lines,
             delete_table_name,

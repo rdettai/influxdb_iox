@@ -4,6 +4,7 @@
 pub mod sender;
 pub mod watch;
 
+use std::ops::Deref;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -345,6 +346,58 @@ pub fn context_with_table(batch: RecordBatch) -> SessionContext {
     let ctx = SessionContext::new();
     ctx.register_table("t", Arc::new(provider)).unwrap();
     ctx
+}
+
+/// Extract the column name from a an expression that might be treated with special NULL handling.
+///
+/// Normally we would just use the column itself:
+///
+/// ```text
+/// #col
+/// ```
+///
+/// However for certain interfaces we need to handle NULL values in a special way, e.g.:
+///
+/// ```text
+/// CASE WHEN #col IS NULL THEN <null placeholder> ELSE #col END
+/// ```
+///
+/// where `<null placeholder>` depends on the type, e.g. for string column this is an empty column.
+pub fn extract_null_wrapped_column(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Column(column) => Some(column.name.clone()),
+        Expr::Case {
+            expr: None,
+            when_then_expr,
+            else_expr: Some(else_expr),
+        } if when_then_expr.len() == 1 => {
+            match (
+                when_then_expr[0].0.deref(),
+                when_then_expr[0].1.deref(),
+                else_expr.deref(),
+            ) {
+                (Expr::IsNull(column_expr), Expr::Literal(scalar), Expr::Column(column))
+                    if is_null_scalar(scalar)
+                        && (column_expr.deref() == &Expr::Column(column.clone())) =>
+                {
+                    Some(column.name.clone())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Check if a scalar looks like a default value for NULL values.
+fn is_null_scalar(scalar: &ScalarValue) -> bool {
+    match scalar {
+        ScalarValue::Boolean(Some(false)) => true,
+        ScalarValue::Float64(Some(f)) if f.total_cmp(&0.0).is_eq() => true,
+        ScalarValue::Int64(Some(0)) => true,
+        ScalarValue::Utf8(Some(s)) if s.is_empty() => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

@@ -1671,6 +1671,7 @@ mod tests {
         task::{Context, Poll},
         time::Duration,
     };
+    use test_helpers::maybe_start_logging;
 
     #[test]
     fn snapshot_empty_buffer_adds_no_snapshots() {
@@ -2161,6 +2162,8 @@ mod tests {
     // Test deletes mixed with writes on a single parittion
     #[tokio::test]
     async fn writes_and_deletes() {
+        maybe_start_logging();
+
         // Make a partition with empty DataBuffer
         let s_id = 1;
         let t_id = 1;

@@ -4096,6 +4096,7 @@ dependencies = [
  "croaring",
  "data_types",
  "datafusion 0.1.0",
+ "datafusion_util",
  "either",
  "hashbrown",
  "itertools",

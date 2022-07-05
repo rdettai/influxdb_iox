@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use datafusion_util::extract_null_wrapped_column;
 use hashbrown::{hash_map, HashMap};
 use itertools::Itertools;
 use observability_deps::tracing::{debug, trace};
@@ -1605,12 +1606,16 @@ impl TryFrom<&DfExpr> for BinaryExpr {
         match df_expr {
             DfExpr::BinaryExpr { left, op, right } => {
                 match (&**left, &**right) {
-                    (DfExpr::Column(c), DfExpr::Literal(scalar)) => Ok(Self::new(
-                        &c.name,
-                        Operator::try_from(op)?,
-                        Literal::try_from(scalar)?,
-                    )),
-                    (DfExpr::Literal(_), DfExpr::Column(_)) => {
+                    (col @ (DfExpr::Column(_) | DfExpr::Case { .. }), DfExpr::Literal(scalar)) => {
+                        Ok(Self::new(
+                            extract_null_wrapped_column(col).ok_or_else(|| {
+                                format!("unsupported expression: {:?} {:?} {:?}", *left, op, *right)
+                            })?,
+                            Operator::try_from(op)?,
+                            Literal::try_from(scalar)?,
+                        ))
+                    }
+                    (DfExpr::Literal(_), DfExpr::Column(_) | DfExpr::Case { .. }) => {
                         // In this case we may have been give (literal, op, column).
                         // Swap left and right around and retry.
                         Self::try_from(&DfExpr::BinaryExpr {

@@ -1,19 +1,45 @@
 use data_types::{DeleteExpr, Op, Scalar};
+use datafusion::scalar::ScalarValue;
+use datafusion_util::extract_null_wrapped_column;
 use snafu::{ResultExt, Snafu};
 use std::ops::Deref;
 
 pub(crate) fn expr_to_df(expr: DeleteExpr) -> datafusion::logical_plan::Expr {
     use datafusion::logical_plan::Expr;
 
-    let column = datafusion::logical_plan::Column {
-        relation: None,
-        name: expr.column,
+    let (value_scalar, null_scalar) = match expr.scalar {
+        Scalar::Bool(value) => (
+            ScalarValue::Boolean(Some(value)),
+            ScalarValue::Boolean(Some(false)),
+        ),
+        Scalar::I64(value) => (ScalarValue::Int64(Some(value)), ScalarValue::Int64(Some(0))),
+        Scalar::F64(value) => (
+            ScalarValue::Float64(Some(value.into())),
+            ScalarValue::Float64(Some(0.0)),
+        ),
+        Scalar::String(value) => (
+            ScalarValue::Utf8(Some(value)),
+            ScalarValue::Utf8(Some("".to_owned())),
+        ),
     };
 
+    let column = Box::new(Expr::Column(datafusion::logical_plan::Column {
+        relation: None,
+        name: expr.column,
+    }));
+    let column = Box::new(Expr::Case {
+        expr: None,
+        when_then_expr: vec![(
+            Box::new(Expr::IsNull(column.clone())),
+            Box::new(Expr::Literal(null_scalar)),
+        )],
+        else_expr: Some(column),
+    });
+
     Expr::BinaryExpr {
-        left: Box::new(Expr::Column(column)),
+        left: column,
         op: op_to_df(expr.op),
-        right: Box::new(Expr::Literal(scalar_to_df(expr.scalar))),
+        right: Box::new(Expr::Literal(value_scalar)),
     }
 }
 
@@ -44,36 +70,42 @@ pub enum DataFusionToExprError {
 pub(crate) fn df_to_expr(
     expr: datafusion::logical_plan::Expr,
 ) -> Result<DeleteExpr, DataFusionToExprError> {
-    match expr {
-        datafusion::logical_plan::Expr::BinaryExpr { left, op, right } => {
-            let (column, scalar) = match (left.deref(), right.deref()) {
-                // The delete predicate parser currently only supports `<column><op><value>`, not `<value><op><column>`,
-                // however this could can easily be extended to support the latter case as well.
-                (
-                    datafusion::logical_plan::Expr::Column(column),
-                    datafusion::logical_plan::Expr::Literal(value),
-                ) => {
-                    let column = column.name.clone();
+    use datafusion::logical_plan::Expr;
 
-                    let scalar = df_to_scalar(value.clone())
-                        .context(CannotConvertDataFusionScalarValueSnafu)?;
+    let (left, op, right) = if let Expr::BinaryExpr { left, op, right } = expr {
+        (left, op, right)
+    } else {
+        return Err(DataFusionToExprError::UnsupportedExpression { expr });
+    };
 
-                    (column, scalar)
-                }
-                (other_left, other_right) => {
-                    return Err(DataFusionToExprError::UnsupportedOperants {
-                        left: other_left.clone(),
-                        right: other_right.clone(),
-                    });
-                }
-            };
+    // The delete predicate parser currently only supports `<column><op><value>`, not `<value><op><column>`,
+    // however this could can easily be extended to support the latter case as well.
 
-            let op = df_to_op(op).context(CannotConvertDataFusionOperatorSnafu)?;
-
-            Ok(DeleteExpr { column, op, scalar })
+    let column = match extract_null_wrapped_column(&left) {
+        Some(column) => column,
+        _ => {
+            return Err(DataFusionToExprError::UnsupportedOperants {
+                left: left.deref().clone(),
+                right: right.deref().clone(),
+            });
         }
-        other => Err(DataFusionToExprError::UnsupportedExpression { expr: other }),
-    }
+    };
+
+    let value = match right.deref() {
+        Expr::Literal(value) => value.clone(),
+        _ => {
+            return Err(DataFusionToExprError::UnsupportedOperants {
+                left: left.deref().clone(),
+                right: right.deref().clone(),
+            });
+        }
+    };
+
+    let scalar = df_to_scalar(value).context(CannotConvertDataFusionScalarValueSnafu)?;
+
+    let op = df_to_op(op).context(CannotConvertDataFusionOperatorSnafu)?;
+
+    Ok(DeleteExpr { column, op, scalar })
 }
 
 pub(crate) fn op_to_df(op: Op) -> datafusion::logical_plan::Operator {
@@ -100,16 +132,6 @@ pub(crate) fn df_to_op(op: datafusion::logical_plan::Operator) -> Result<Op, Dat
     }
 }
 
-pub(crate) fn scalar_to_df(scalar: Scalar) -> datafusion::scalar::ScalarValue {
-    use datafusion::scalar::ScalarValue;
-    match scalar {
-        Scalar::Bool(value) => ScalarValue::Boolean(Some(value)),
-        Scalar::I64(value) => ScalarValue::Int64(Some(value)),
-        Scalar::F64(value) => ScalarValue::Float64(Some(value.into())),
-        Scalar::String(value) => ScalarValue::Utf8(Some(value)),
-    }
-}
-
 #[derive(Debug, Snafu)]
 pub enum DataFusionToScalarError {
     #[snafu(display("unsupported scalar value: {:?}", value))]
@@ -121,7 +143,6 @@ pub enum DataFusionToScalarError {
 pub(crate) fn df_to_scalar(
     scalar: datafusion::scalar::ScalarValue,
 ) -> Result<Scalar, DataFusionToScalarError> {
-    use datafusion::scalar::ScalarValue;
     match scalar {
         ScalarValue::Utf8(Some(value)) => Ok(Scalar::String(value)),
         ScalarValue::Int64(Some(value)) => Ok(Scalar::I64(value)),
