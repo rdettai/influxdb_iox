@@ -117,6 +117,22 @@ async fn test_cases_duplicates_sql() {
 }
 
 #[tokio::test]
+// Tests from "issue5023.sql",
+async fn test_cases_issue5023_sql() {
+    test_helpers::maybe_start_logging();
+
+    let input_path = Path::new("cases").join("in").join("issue5023.sql");
+    let mut runner = Runner::new();
+    runner
+        .run(input_path)
+        .await
+        .expect("test failed");
+    runner
+        .flush()
+        .expect("flush worked");
+}
+
+#[tokio::test]
 // Tests from "new_sql_system_tables.sql",
 async fn test_cases_new_sql_system_tables_sql() {
     test_helpers::maybe_start_logging();

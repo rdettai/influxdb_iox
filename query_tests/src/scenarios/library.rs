@@ -6,7 +6,9 @@ use super::{
 };
 use crate::scenarios::util::{make_n_chunks_scenario, ChunkData};
 use async_trait::async_trait;
-use data_types::{DeleteExpr, DeletePredicate, Op, Scalar, TimestampRange};
+use data_types::{
+    DeleteExpr, DeletePredicate, Op, Scalar, TimestampRange, MAX_NANO_TIME, MIN_NANO_TIME,
+};
 use iox_query::frontend::sql::SqlQueryPlanner;
 
 #[derive(Debug)]
@@ -1345,6 +1347,40 @@ impl DbSetup for TwoChunksMissingColumns {
                 ..Default::default()
             },
         ])
+        .await
+    }
+}
+
+#[derive(Debug)]
+pub struct Issue5023 {}
+#[async_trait]
+impl DbSetup for Issue5023 {
+    async fn make(&self) -> Vec<DbScenario> {
+        let partition_key = "2020-06-11T00";
+
+        let lp_lines = vec![
+            "swap,host=server01 in=3,out=4 1591894450000000000",
+            "swap,host=server01,name=disk0 in=3,out=4 1591894460000000000",
+            "swap,host=server01,name=disk1 in=3,out=4 1591894460000000000",
+        ];
+
+        let delete_table_name = "swap";
+        let pred = DeletePredicate {
+            range: TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+            exprs: vec![DeleteExpr::new(
+                "name".to_string(),
+                Op::Eq,
+                Scalar::String(("disk0").to_string()),
+            )],
+        };
+
+        all_scenarios_for_one_chunk(
+            vec![&pred],
+            vec![],
+            lp_lines,
+            delete_table_name,
+            partition_key,
+        )
         .await
     }
 }
