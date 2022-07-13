@@ -2,9 +2,8 @@ use super::DmlHandler;
 use async_trait::async_trait;
 use data_types::{DatabaseName, DeletePredicate};
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{DurationHistogram, Metric, DurationHistogramOptions, DURATION_MAX};
+use metric::{DurationHistogram, Metric};
 use trace::{ctx::SpanContext, span::SpanRecorder};
-use std::time::Duration;
 
 /// An instrumentation decorator recording call latencies for [`DmlHandler`] implementations.
 ///
@@ -26,30 +25,11 @@ impl<T> InstrumentationDecorator<T> {
     /// Wrap a new [`InstrumentationDecorator`] over `T` exposing metrics
     /// labelled with `handler=name`.
     pub fn new(name: &'static str, registry: &metric::Registry, inner: T) -> Self {
-        let buckets = || {
-            DurationHistogramOptions::new(vec![
-                Duration::from_millis(5),
-                Duration::from_millis(10),
-                Duration::from_millis(20),
-                Duration::from_millis(40),
-                Duration::from_millis(80),
-                Duration::from_millis(160),
-                Duration::from_millis(320),
-                Duration::from_millis(640),
-                Duration::from_millis(1280),
-                Duration::from_millis(2560),
-                Duration::from_millis(5120),
-                Duration::from_millis(10240),
-                Duration::from_millis(20480),
-                DURATION_MAX,
-            ])
-        };
         let write: Metric<DurationHistogram> =
-            registry.register_metric_with_options("dml_handler_write_duration", "write handler call duration", buckets,);
-        let delete: Metric<DurationHistogram> = registry.register_metric_with_options(
+            registry.register_metric("dml_handler_write_duration", "write handler call duration");
+        let delete: Metric<DurationHistogram> = registry.register_metric(
             "dml_handler_delete_duration",
             "delete handler call duration",
-            buckets,
         );
 
         let write_success = write.recorder(&[("handler", name), ("result", "success")]);

@@ -3,8 +3,8 @@
 use super::NamespaceCache;
 use data_types::{DatabaseName, NamespaceSchema};
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{DurationHistogram, Metric, U64Gauge, DurationHistogramOptions, DURATION_MAX};
-use std::{sync::Arc, time::Duration};
+use metric::{DurationHistogram, Metric, U64Gauge};
+use std::sync::Arc;
 
 /// An [`InstrumentedCache`] decorates a [`NamespaceCache`] with cache read
 /// hit/miss and cache put insert/update metrics.
@@ -31,30 +31,13 @@ pub struct InstrumentedCache<T, P = SystemProvider> {
 impl<T> InstrumentedCache<T> {
     /// Instrument `T`, recording cache operations to `registry`.
     pub fn new(inner: T, registry: &metric::Registry) -> Self {
-        let buckets = || {
-            DurationHistogramOptions::new(
-                    vec![
-                    Duration::from_millis(5),
-                    Duration::from_millis(10),
-                    Duration::from_millis(20),
-                    Duration::from_millis(40),
-                    Duration::from_millis(80),
-                    Duration::from_millis(160),
-                    Duration::from_millis(320),
-                    Duration::from_millis(640),
-                    Duration::from_millis(1280),
-                    Duration::from_millis(2560),
-                    Duration::from_millis(5120),
-                    DURATION_MAX,
-                ])
-        };
         let get_counter: Metric<DurationHistogram> =
-            registry.register_metric_with_options("namespace_cache_get_duration", "cache read call duration", buckets,);
+            registry.register_metric("namespace_cache_get_duration", "cache read call duration");
         let get_hit = get_counter.recorder(&[("result", "hit")]);
         let get_miss = get_counter.recorder(&[("result", "miss")]);
 
         let put_counter: Metric<DurationHistogram> =
-            registry.register_metric_with_options("namespace_cache_put_duration", "cache put call duration", buckets,);
+            registry.register_metric("namespace_cache_put_duration", "cache put call duration");
         let put_insert = put_counter.recorder(&[("op", "insert")]);
         let put_update = put_counter.recorder(&[("op", "update")]);
 
