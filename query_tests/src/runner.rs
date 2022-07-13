@@ -5,16 +5,12 @@ mod setup;
 
 use arrow::record_batch::RecordBatch;
 use arrow_util::{display::pretty_format_batches, test_util::sort_record_batch};
-use iox_query::{
-    exec::{Executor, ExecutorType},
-    frontend::sql::SqlQueryPlanner,
-};
+use iox_query::frontend::sql::SqlQueryPlanner;
 use snafu::{OptionExt, ResultExt, Snafu};
 use std::{
     io::LineWriter,
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use self::{
@@ -22,7 +18,6 @@ use self::{
     setup::TestSetup,
 };
 use crate::scenarios::{DbScenario, DbSetup};
-use iox_query::exec::ExecutorConfig;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Snafu)]
@@ -268,22 +263,16 @@ impl<W: Write> Runner<W> {
         let sql = query.sql();
         let mut previous_results = vec![];
 
+        writeln!(self.log, "SQL: '{:#?}'", sql)?;
+
         for scenario in db_setup.make().await {
             let DbScenario {
                 scenario_name, db, ..
             } = scenario;
 
-            writeln!(self.log, "Running scenario '{}'", scenario_name)?;
-            writeln!(self.log, "SQL: '{:#?}'", sql)?;
+            writeln!(self.log, "  Running scenario '{}'", scenario_name)?;
             let planner = SqlQueryPlanner::default();
-            let executor = Arc::new(Executor::new_with_config(ExecutorConfig {
-                num_threads: 1,
-                target_query_partitions: 4,
-            }));
-            let ctx = executor
-                .new_execution_config(ExecutorType::Query)
-                .with_default_catalog(db.as_catalog_provider_arc())
-                .build();
+            let ctx = db.new_query_context(None);
 
             let physical_plan = planner
                 .query(sql, &ctx)
@@ -314,7 +303,7 @@ impl<W: Write> Runner<W> {
                     current_results,
                 }
                 .build();
-                writeln!(self.log, "{}", err)?;
+                writeln!(self.log, "    Err: {}", err)?;
                 return Err(err);
             }
             previous_results = current_results;

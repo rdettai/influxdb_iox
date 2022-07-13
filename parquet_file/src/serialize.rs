@@ -156,20 +156,19 @@ fn writer_props(meta: &IoxMetadata) -> Result<WriterProperties, prost::EncodeErr
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
+    use super::*;
+    use crate::metadata::IoxParquetMetaData;
     use arrow::array::{ArrayRef, StringBuilder};
     use bytes::Bytes;
-    use data_types::{NamespaceId, PartitionId, SequenceNumber, SequencerId, TableId};
+    use data_types::{
+        CompactionLevel, NamespaceId, PartitionId, SequenceNumber, SequencerId, TableId,
+    };
     use iox_time::Time;
     use parquet::{
         arrow::{ArrowReader, ParquetFileArrowReader},
         file::serialized_reader::SerializedFileReader,
     };
-
-    use crate::metadata::IoxParquetMetaData;
-
-    use super::*;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_encode_stream() {
@@ -185,7 +184,7 @@ mod tests {
             partition_key: "potato".into(),
             min_sequence_number: SequenceNumber::new(10),
             max_sequence_number: SequenceNumber::new(11),
-            compaction_level: 1,
+            compaction_level: CompactionLevel::FileNonOverlapped,
             sort_key: None,
         };
 

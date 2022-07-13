@@ -88,8 +88,9 @@
 //! [Thrift Compact Protocol]: https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md
 use bytes::Bytes;
 use data_types::{
-    ColumnSet, ColumnSummary, InfluxDbType, NamespaceId, ParquetFileParams, PartitionId,
-    PartitionKey, SequenceNumber, SequencerId, StatValues, Statistics, TableId, Timestamp,
+    ColumnId, ColumnSet, ColumnSummary, CompactionLevel, InfluxDbType, NamespaceId,
+    ParquetFileParams, PartitionId, PartitionKey, SequenceNumber, SequencerId, StatValues,
+    Statistics, TableId, Timestamp,
 };
 use generated_types::influxdata::iox::ingester::v1 as proto;
 use iox_time::Time;
@@ -216,7 +217,7 @@ pub enum Error {
 
     #[snafu(display("Cannot parse IOx metadata from Protobuf: {}", source))]
     IoxMetadataBroken {
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
     #[snafu(display("Cannot encode ZSTD message for parquet metadata: {}", source))]
@@ -227,6 +228,12 @@ pub enum Error {
 
     #[snafu(display("Cannot parse UUID: {}", source))]
     UuidParse { source: uuid::Error },
+
+    #[snafu(display("{}: `{}`", source, compaction_level))]
+    InvalidCompactionLevel {
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+        compaction_level: i32,
+    },
 }
 
 #[allow(missing_docs)]
@@ -273,8 +280,20 @@ pub struct IoxMetadata {
     /// sequence number of the last write
     pub max_sequence_number: SequenceNumber,
 
-    /// the compaction level of the file
-    pub compaction_level: i16,
+    /// The compaction level of the file.
+    ///
+    ///  * 0 (`CompactionLevel::Initial`): represents a level-0 file that is persisted by an
+    ///      Ingester. Partitions with level-0 files are usually hot/recent partitions.
+    ///  * 1 (`CompactionLevel::FileOverlapped`): represents a level-1 file that is persisted by a
+    ///      Compactor and potentially overlaps with other level-1 files. Partitions with level-1
+    ///      files are partitions with a lot of or/and large overlapped files that have to go
+    ///      through many compaction cycles before they are fully compacted to non-overlapped
+    ///      files.
+    ///  * 2 (`CompactionLevel::FileNonOverlapped`): represents a level-2 file that is persisted by
+    ///      a Compactor and does not overlap with other files except level 0 ones. Eventually,
+    ///      cold partitions (partitions that no longer needs to get compacted) will only include
+    ///      one or many level-2 files
+    pub compaction_level: CompactionLevel,
 
     /// Sort key of this chunk
     pub sort_key: Option<SortKey>,
@@ -358,7 +377,11 @@ impl IoxMetadata {
             min_sequence_number: SequenceNumber::new(proto_msg.min_sequence_number),
             max_sequence_number: SequenceNumber::new(proto_msg.max_sequence_number),
             sort_key,
-            compaction_level: proto_msg.compaction_level as i16,
+            compaction_level: proto_msg.compaction_level.try_into().context(
+                InvalidCompactionLevelSnafu {
+                    compaction_level: proto_msg.compaction_level,
+                },
+            )?,
         })
     }
 
@@ -382,12 +405,16 @@ impl IoxMetadata {
     /// metadata.
     ///
     /// [`RecordBatch`]: arrow::record_batch::RecordBatch
-    pub fn to_parquet_file(
+    pub fn to_parquet_file<F>(
         &self,
         partition_id: PartitionId,
         file_size_bytes: usize,
         metadata: &IoxParquetMetaData,
-    ) -> ParquetFileParams {
+        column_id_map: F,
+    ) -> ParquetFileParams
+    where
+        F: for<'a> Fn(&'a str) -> ColumnId,
+    {
         let decoded = metadata.decode().expect("invalid IOx metadata");
         trace!(
             ?partition_id,
@@ -409,7 +436,7 @@ impl IoxMetadata {
         let stats = decoded
             .read_statistics(&*schema)
             .expect("invalid statistics");
-        let columns: Vec<String> = stats.iter().map(|v| v.name.clone()).collect();
+        let columns: Vec<_> = stats.iter().map(|v| column_id_map(&v.name)).collect();
         let time_summary = stats
             .into_iter()
             .find(|v| v.name == TIME_COLUMN_NAME)
@@ -936,13 +963,13 @@ fn extract_iox_statistics(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use arrow::{
         array::{ArrayRef, StringBuilder, TimestampNanosecondBuilder},
         record_batch::RecordBatch,
     };
+    use data_types::CompactionLevel;
     use schema::builder::SchemaBuilder;
-
-    use super::*;
 
     #[test]
     fn iox_metadata_protobuf_round_trip() {
@@ -962,7 +989,7 @@ mod tests {
             partition_key: PartitionKey::from("part"),
             min_sequence_number: SequenceNumber::new(5),
             max_sequence_number: SequenceNumber::new(6),
-            compaction_level: 0,
+            compaction_level: CompactionLevel::Initial,
             sort_key: Some(sort_key),
         };
 
@@ -987,7 +1014,7 @@ mod tests {
             partition_key: "potato".into(),
             min_sequence_number: SequenceNumber::new(10),
             max_sequence_number: SequenceNumber::new(11),
-            compaction_level: 1,
+            compaction_level: CompactionLevel::FileNonOverlapped,
             sort_key: None,
         };
 

@@ -2,12 +2,13 @@
 
 use crate::{
     cache::CatalogCache, chunk::ChunkAdapter, ingester::IngesterConnection, query_log::QueryLog,
-    table::QuerierTable,
+    table::QuerierTable, QuerierChunkLoadSetting,
 };
-use data_types::{NamespaceId, NamespaceSchema};
+use data_types::{KafkaPartition, NamespaceId, NamespaceSchema, ParquetFileId};
 use iox_query::exec::Executor;
 use parquet_file::storage::ParquetStorage;
 use schema::Schema;
+use sharder::JumpHash;
 use std::{collections::HashMap, sync::Arc};
 
 mod query_access;
@@ -18,10 +19,13 @@ mod test_util;
 /// Maps a catalog namespace to all the in-memory resources and sync-state that the querier needs.
 ///
 /// # Data Structures & Sync
-/// Tables and schemas are created when [`QuerierNamespace`] is created because DataFusion does not implement async
-/// schema inspection. The actual payload (chunks and tombstones) are only queried on demand.
 ///
-/// Most access to the [IOx Catalog](iox_catalog::interface::Catalog) are cached via [`CatalogCache`].
+/// Tables and schemas are created when [`QuerierNamespace`] is created because DataFusion does not
+/// implement async schema inspection. The actual payload (chunks and tombstones) are only queried
+/// on demand.
+///
+/// Most accesses to the [IOx Catalog](iox_catalog::interface::Catalog) are cached via
+/// [`CatalogCache`].
 #[derive(Debug)]
 pub struct QuerierNamespace {
     /// ID of this namespace.
@@ -36,7 +40,7 @@ pub struct QuerierNamespace {
     /// Executor for queries.
     exec: Arc<Executor>,
 
-    /// Catalog cache
+    /// Catalog cache.
     catalog_cache: Arc<CatalogCache>,
 
     /// Query log.
@@ -50,8 +54,9 @@ impl QuerierNamespace {
         schema: Arc<NamespaceSchema>,
         name: Arc<str>,
         exec: Arc<Executor>,
-        ingester_connection: Arc<dyn IngesterConnection>,
+        ingester_connection: Option<Arc<dyn IngesterConnection>>,
         query_log: Arc<QueryLog>,
+        sharder: Arc<JumpHash<Arc<KafkaPartition>>>,
     ) -> Self {
         let tables: HashMap<_, _> = schema
             .tables
@@ -62,11 +67,12 @@ impl QuerierNamespace {
                 let schema = Schema::try_from(table_schema.clone()).expect("cannot build schema");
 
                 let table = Arc::new(QuerierTable::new(
+                    Arc::clone(&sharder),
                     Arc::clone(&name),
                     id,
                     Arc::clone(&table_name),
                     Arc::new(schema),
-                    Arc::clone(&ingester_connection),
+                    ingester_connection.clone(),
                     Arc::clone(&chunk_adapter),
                 ));
 
@@ -95,14 +101,16 @@ impl QuerierNamespace {
         name: Arc<str>,
         schema: Arc<NamespaceSchema>,
         exec: Arc<Executor>,
-        ingester_connection: Arc<dyn IngesterConnection>,
+        ingester_connection: Option<Arc<dyn IngesterConnection>>,
+        sharder: Arc<JumpHash<Arc<KafkaPartition>>>,
+        load_settings: HashMap<ParquetFileId, QuerierChunkLoadSetting>,
     ) -> Self {
         let time_provider = catalog_cache.time_provider();
         let chunk_adapter = Arc::new(ChunkAdapter::new(
             catalog_cache,
             store,
             metric_registry,
-            Arc::clone(&time_provider),
+            load_settings,
         ));
         let query_log = Arc::new(QueryLog::new(10, time_provider));
 
@@ -113,6 +121,7 @@ impl QuerierNamespace {
             exec,
             ingester_connection,
             query_log,
+            sharder,
         )
     }
 

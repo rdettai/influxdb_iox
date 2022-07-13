@@ -66,7 +66,7 @@ mod tests {
         // QuerierDatabase::new returns an error if there are no sequencers in the catalog
         catalog.create_sequencer(0).await;
 
-        let catalog_cache = Arc::new(QuerierCatalogCache::new(
+        let catalog_cache = Arc::new(QuerierCatalogCache::new_testing(
             catalog.catalog(),
             catalog.time_provider(),
             catalog.metric_registry(),
@@ -78,7 +78,7 @@ mod tests {
                 catalog.metric_registry(),
                 ParquetStorage::new(catalog.object_store()),
                 catalog.exec(),
-                create_ingester_connection_for_testing(),
+                Some(create_ingester_connection_for_testing()),
                 QuerierDatabase::MAX_CONCURRENT_QUERIES_MAX,
             )
             .await
@@ -101,7 +101,7 @@ mod tests {
         // QuerierDatabase::new returns an error if there are no sequencers in the catalog
         catalog.create_sequencer(0).await;
 
-        let catalog_cache = Arc::new(QuerierCatalogCache::new(
+        let catalog_cache = Arc::new(QuerierCatalogCache::new_testing(
             catalog.catalog(),
             catalog.time_provider(),
             catalog.metric_registry(),
@@ -113,7 +113,7 @@ mod tests {
                 catalog.metric_registry(),
                 ParquetStorage::new(catalog.object_store()),
                 catalog.exec(),
-                create_ingester_connection_for_testing(),
+                Some(create_ingester_connection_for_testing()),
                 QuerierDatabase::MAX_CONCURRENT_QUERIES_MAX,
             )
             .await

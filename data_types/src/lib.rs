@@ -1,12 +1,13 @@
 //! Shared data types
 
+// `clippy::use_self` is deliberately excluded from the lints this crate uses.
+// See <https://github.com/rust-lang/rust-clippy/issues/6902>.
 #![warn(
     missing_copy_implementations,
     missing_debug_implementations,
     missing_docs,
     clippy::explicit_iter_loop,
     clippy::future_not_send,
-    clippy::use_self,
     clippy::clone_on_ref_ptr
 )]
 
@@ -18,9 +19,10 @@ use schema::{
     TIME_COLUMN_NAME,
 };
 use snafu::{ResultExt, Snafu};
+use sqlx::postgres::PgHasArrayType;
 use std::{
     borrow::{Borrow, Cow},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     convert::TryFrom,
     fmt::{Display, Write},
     mem::{self, size_of_val},
@@ -29,6 +31,32 @@ use std::{
     sync::Arc,
 };
 use uuid::Uuid;
+
+/// Compaction levels
+#[allow(non_camel_case_types)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, sqlx::Type)]
+#[repr(i16)]
+pub enum CompactionLevel {
+    /// The starting compaction level for parquet files persisted by an Ingester is zero.
+    Initial = 0,
+    /// Level of files persisted by a Compactor that overlapped with other level-1 files
+    FileOverlapped = 1,
+    /// Level of files persisted by a Compactor that do not over lap with non-level-0 files
+    FileNonOverlapped = 2,
+}
+
+impl TryFrom<i32> for CompactionLevel {
+    type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            x if x == Self::Initial as i32 => Ok(Self::Initial),
+            x if x == Self::FileOverlapped as i32 => Ok(Self::FileOverlapped),
+            x if x == Self::FileNonOverlapped as i32 => Ok(Self::FileNonOverlapped),
+            _ => Err("invalid compaction level value".into()),
+        }
+    }
+}
 
 /// Unique ID for a `Namespace`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
@@ -123,6 +151,12 @@ impl ColumnId {
     }
 }
 
+impl PgHasArrayType for ColumnId {
+    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
+        <i64 as PgHasArrayType>::array_type_info()
+    }
+}
+
 /// Unique ID for a `Sequencer`. Note this is NOT the same as the
 /// "sequencer_id" in the `write_buffer` which currently means
 /// "kafka partition".
@@ -167,6 +201,19 @@ impl std::fmt::Display for KafkaPartition {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
+}
+
+/// Potential configurations of ingester connections for the querier to associate with a sequencer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IngesterMapping {
+    /// Deliberately not mapping this sequencer to an ingester. If the querier gets a query for
+    /// this sequencer, it should return an error.
+    NotMapped,
+    /// Deliberately not contacting ingesters for this sequencer. If the querier gets a query for
+    /// this sequencer, it should only return persisted data.
+    Ignore,
+    /// The address of the ingester to contact for this sequencer.
+    Addr(Arc<str>),
 }
 
 /// Unique ID for a `Partition`
@@ -460,6 +507,14 @@ impl TableSchema {
                 .iter()
                 .map(|(k, v)| size_of_val(k) + k.capacity() + size_of_val(v))
                 .sum::<usize>()
+    }
+
+    /// Create `ID->name` map for columns.
+    pub fn column_id_map(&self) -> HashMap<ColumnId, &str> {
+        self.columns
+            .iter()
+            .map(|(name, c)| (c.id, name.as_str()))
+            .collect()
     }
 }
 
@@ -806,7 +861,7 @@ impl Tombstone {
 /// Set of columns.
 #[derive(Debug, Clone, PartialEq, sqlx::Type)]
 #[sqlx(transparent)]
-pub struct ColumnSet(Vec<String>);
+pub struct ColumnSet(Vec<ColumnId>);
 
 impl ColumnSet {
     /// Create new column set.
@@ -815,19 +870,11 @@ impl ColumnSet {
     ///
     /// # Panic
     /// Panics when the set of passed columns contains duplicates.
-    pub fn new<T, I>(columns: I) -> Self
+    pub fn new<I>(columns: I) -> Self
     where
-        T: Into<String>,
-        I: IntoIterator<Item = T>,
+        I: IntoIterator<Item = ColumnId>,
     {
-        let mut columns: Vec<String> = columns
-            .into_iter()
-            .map(|c| {
-                let mut col: String = c.into();
-                col.shrink_to_fit();
-                col
-            })
-            .collect();
+        let mut columns: Vec<ColumnId> = columns.into_iter().collect();
         columns.sort();
 
         let len_pre_dedup = columns.len();
@@ -842,20 +889,18 @@ impl ColumnSet {
 
     /// Estimate the memory consumption of this object and its contents
     pub fn size(&self) -> usize {
-        std::mem::size_of_val(self)
-            + (std::mem::size_of::<String>() * self.0.capacity())
-            + self.0.iter().map(|s| s.len()).sum::<usize>()
+        std::mem::size_of_val(self) + (std::mem::size_of::<ChunkId>() * self.0.capacity())
     }
 }
 
-impl From<ColumnSet> for Vec<String> {
+impl From<ColumnSet> for Vec<ColumnId> {
     fn from(set: ColumnSet) -> Self {
         set.0
     }
 }
 
 impl Deref for ColumnSet {
-    type Target = [String];
+    type Target = [ColumnId];
 
     fn deref(&self) -> &Self::Target {
         self.0.deref()
@@ -891,8 +936,20 @@ pub struct ParquetFile {
     pub file_size_bytes: i64,
     /// the number of rows of data in this file
     pub row_count: i64,
-    /// the compaction level of the file
-    pub compaction_level: i16,
+    /// The compaction level of the file.
+    ///
+    ///  * 0 (`CompactionLevel::Initial`): represents a level-0 file that is persisted by an
+    ///      Ingester. Partitions with level-0 files are usually hot/recent partitions.
+    ///  * 1 (`CompactionLevel::FileOverlapped`): represents a level-1 file that is persisted by a
+    ///      Compactor and potentially overlaps with other level-1 files. Partitions with level-1
+    ///      files are partitions with a lot of or/and large overlapped files that have to go
+    ///      through many compaction cycles before they are fully compacted to non-overlapped
+    ///      files.
+    ///  * 2 (`CompactionLevel::FileNonOverlapped`): represents a level-2 file that is persisted by
+    ///      a Compactor and does not overlap with other files except level 0 ones. Eventually,
+    ///      cold partitions (partitions that no longer needs to get compacted) will only include
+    ///      one or many level-2 files
+    pub compaction_level: CompactionLevel,
     /// the creation time of the parquet file
     pub created_at: Timestamp,
     /// Set of columns within this parquet file.
@@ -946,7 +1003,7 @@ pub struct ParquetFileParams {
     /// the number of rows of data in this file
     pub row_count: i64,
     /// the compaction level of the file
-    pub compaction_level: i16,
+    pub compaction_level: CompactionLevel,
     /// the creation time of the parquet file
     pub created_at: Timestamp,
     /// columns in this file.
@@ -1032,8 +1089,8 @@ impl ChunkOrder {
     pub const MIN: Self = Self(0);
 
     /// Create a ChunkOrder from the given value.
-    pub fn new(order: i64) -> Option<Self> {
-        Some(Self(order))
+    pub fn new(order: i64) -> Self {
+        Self(order)
     }
 }
 
@@ -1877,6 +1934,14 @@ impl Statistics {
             Self::String(_) => "String",
         }
     }
+
+    /// Extract i64 type.
+    pub fn as_i64(&self) -> Option<&StatValues<i64>> {
+        match self {
+            Self::I64(val) => Some(val),
+            _ => None,
+        }
+    }
 }
 
 impl StatValues<String> {
@@ -2032,17 +2097,30 @@ pub const MAX_NANO_TIME: i64 = i64::MAX - 1;
 pub struct TimestampRange {
     /// Start defines the inclusive lower bound. Minimum value is [MIN_NANO_TIME]
     start: i64,
-    /// End defines the inclusive upper bound. Maximum value is [MAX_NANO_TIME]
+    /// End defines the exclusive upper bound. Maximum value is [MAX_NANO_TIME]
     end: i64,
 }
 
 impl TimestampRange {
-    /// Create a new TimestampRange. Clamps to MIN_NANO_TIME/MAX_NANO_TIME.
+    /// Create a new TimestampRange.
+    ///
+    /// Takes an inclusive start and an exclusive end. You may create an empty range by setting `start = end`.
+    ///
+    /// Clamps start to [`MIN_NANO_TIME`].
+    /// end is unclamped - end may be set to i64:MAX == MAX_NANO_TIME+1 to indicate no restriction on time.
+    ///
+    /// # Panic
+    /// Panics if `start > end`.
     pub fn new(start: i64, end: i64) -> Self {
-        debug_assert!(end >= start);
+        assert!(end >= start, "start ({start}) > end ({end})");
         let start = start.max(MIN_NANO_TIME);
-        let end = end.min(MAX_NANO_TIME);
+        let end = end.max(MIN_NANO_TIME);
         Self { start, end }
+    }
+
+    /// Returns true if this range contains all representable timestamps
+    pub fn contains_all(&self) -> bool {
+        self.start <= MIN_NANO_TIME && self.end > MAX_NANO_TIME
     }
 
     #[inline]
@@ -2051,12 +2129,12 @@ impl TimestampRange {
         self.start <= v && v < self.end
     }
 
-    /// Return the timestamp range's end.
+    /// Return the timestamp exclusive range's end.
     pub fn end(&self) -> i64 {
         self.end
     }
 
-    /// Return the timestamp range's start.
+    /// Return the timestamp inclusive range's start.
     pub fn start(&self) -> i64 {
         self.start
     }
@@ -2065,7 +2143,7 @@ impl TimestampRange {
 /// Specifies a min/max timestamp value.
 ///
 /// Note this differs subtlety (but critically) from a
-/// `TimestampRange` as the minimum and maximum values are included
+/// [`TimestampRange`] as the minimum and maximum values are included ([`TimestampRange`] has an exclusive end).
 #[derive(Clone, Debug, Copy)]
 pub struct TimestampMinMax {
     /// The minimum timestamp value
@@ -3053,8 +3131,8 @@ mod tests {
     fn test_timestamp_nano_min_max() {
         let cases = vec![
             (
-                "MIN/MAX Nanos",
-                TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME),
+                "MIN / MAX Nanos",
+                TimestampRange::new(MIN_NANO_TIME, MAX_NANO_TIME + 1),
             ),
             ("MIN/MAX i64", TimestampRange::new(i64::MIN, i64::MAX)),
         ];
@@ -3062,11 +3140,13 @@ mod tests {
         for (name, range) in cases {
             println!("case: {}", name);
             assert!(!range.contains(i64::MIN));
+            assert!(!range.contains(i64::MIN + 1));
             assert!(range.contains(MIN_NANO_TIME));
             assert!(range.contains(MIN_NANO_TIME + 1));
             assert!(range.contains(MAX_NANO_TIME - 1));
-            assert!(!range.contains(MAX_NANO_TIME));
+            assert!(range.contains(MAX_NANO_TIME));
             assert!(!range.contains(i64::MAX));
+            assert!(range.contains_all());
         }
     }
 
@@ -3081,6 +3161,7 @@ mod tests {
         assert!(!range.contains(MAX_NANO_TIME - 1));
         assert!(!range.contains(MAX_NANO_TIME));
         assert!(!range.contains(i64::MAX));
+        assert!(!range.contains_all());
     }
 
     #[test]
@@ -3188,6 +3269,12 @@ mod tests {
     #[test]
     #[should_panic = "set contains duplicates"]
     fn test_column_set_duplicates() {
-        ColumnSet::new(["foo", "bar", "foo"]);
+        ColumnSet::new([ColumnId::new(1), ColumnId::new(2), ColumnId::new(1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "start (2) > end (1)")]
+    fn test_timestamprange_invalid() {
+        TimestampRange::new(2, 1);
     }
 }

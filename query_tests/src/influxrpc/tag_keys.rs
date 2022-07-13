@@ -7,6 +7,8 @@ use iox_query::{
 };
 use predicate::{rpc_predicate::InfluxRpcPredicate, Predicate};
 
+use super::util::make_empty_tag_ref_expr;
+
 /// Creates and loads several database scenarios using the db_setup function.
 ///
 /// Runs table_column_names(predicate) and compares it to the expected output.
@@ -92,14 +94,12 @@ async fn list_tag_columns_predicate() {
 }
 
 #[tokio::test]
-async fn list_tag_columns_predicate_negative_nonexistent_column() {
+async fn list_tag_columns_predicate_negative_nonexistent_column2() {
     let predicate = Predicate::default()
         .with_expr(col("state").eq(lit("MA"))) // state=MA
-        .with_expr(col("host").not_eq(lit("server01"))); // nonexistent column with !=; always true
+        .with_expr(make_empty_tag_ref_expr("host").not_eq(lit("server01"))); // nonexistent column with !=; always true
     let predicate = InfluxRpcPredicate::new(None, predicate);
-    // This currently returns nothing, which is incorrect, it should return "city", "county",
-    // "state" because a nonexistent column is always not equal to anything.
-    let expected_tag_keys = vec![];
+    let expected_tag_keys = vec!["city", "county", "state"];
     run_tag_keys_test_case(TwoMeasurementsManyNulls {}, predicate, expected_tag_keys).await;
 }
 
@@ -170,7 +170,7 @@ async fn list_tag_name_end_to_end() {
 }
 
 #[tokio::test]
-async fn list_tag_name_end_to_end_with_delete() {
+async fn list_tag_name_end_to_end_with_delete_and_pred() {
     let predicate = Predicate::default()
         .with_range(0, 10000)
         .with_expr(col("host").eq(lit("server01")));
@@ -180,40 +180,47 @@ async fn list_tag_name_end_to_end_with_delete() {
 }
 
 #[tokio::test]
+async fn list_tag_name_end_to_end_with_delete() {
+    let predicate = Predicate::default().with_expr(col("_measurement").eq(lit("swap")));
+    let predicate = InfluxRpcPredicate::new(None, predicate);
+    let expected_tag_keys = vec!["host", "name"];
+    run_tag_keys_test_case(EndToEndTestWithDelete {}, predicate, expected_tag_keys).await;
+}
+
+#[tokio::test]
 async fn list_tag_name_max_time() {
     test_helpers::maybe_start_logging();
-    let predicate = Predicate::default().with_range(MIN_NANO_TIME, MAX_NANO_TIME);
+    let predicate = Predicate::default().with_range(MIN_NANO_TIME, i64::MAX);
     let predicate = InfluxRpcPredicate::new(None, predicate);
     let expected_tag_keys = vec!["host"];
     run_tag_keys_test_case(MeasurementWithMaxTime {}, predicate, expected_tag_keys).await;
 }
 
 #[tokio::test]
-async fn list_tag_name_max_i64() {
+async fn list_tag_name_all_time() {
     test_helpers::maybe_start_logging();
-    let predicate = Predicate::default()
-        // outside valid timestamp range
-        .with_range(i64::MIN, i64::MAX);
+    let predicate = Predicate::default().with_range(MIN_NANO_TIME, MAX_NANO_TIME + 1);
     let predicate = InfluxRpcPredicate::new(None, predicate);
     let expected_tag_keys = vec!["host"];
     run_tag_keys_test_case(MeasurementWithMaxTime {}, predicate, expected_tag_keys).await;
 }
 
 #[tokio::test]
-async fn list_tag_name_max_time_less_one() {
+async fn list_tag_name_max_time_excluded() {
     test_helpers::maybe_start_logging();
-    let predicate = Predicate::default().with_range(MIN_NANO_TIME, MAX_NANO_TIME - 1); // one less than max timestamp
+    let predicate = Predicate::default().with_range(MIN_NANO_TIME + 1, MAX_NANO_TIME); // exclusive end
     let predicate = InfluxRpcPredicate::new(None, predicate);
     let expected_tag_keys = vec![];
     run_tag_keys_test_case(MeasurementWithMaxTime {}, predicate, expected_tag_keys).await;
 }
 
 #[tokio::test]
-async fn list_tag_name_max_time_greater_one() {
+async fn list_tag_name_max_time_included() {
     test_helpers::maybe_start_logging();
-    let predicate = Predicate::default().with_range(MIN_NANO_TIME + 1, MAX_NANO_TIME); // one more than min timestamp
+    // The predicate matters (since MIN_NANO_TIME would be filtered out) and so cannot be optimized away
+    let predicate = Predicate::default().with_range(MIN_NANO_TIME + 1, MAX_NANO_TIME + 1);
     let predicate = InfluxRpcPredicate::new(None, predicate);
-    let expected_tag_keys = vec![];
+    let expected_tag_keys = vec!["host"];
     run_tag_keys_test_case(MeasurementWithMaxTime {}, predicate, expected_tag_keys).await;
 }
 

@@ -13,7 +13,7 @@ use arrow::{
 };
 use bytes::Bytes;
 use datafusion::{parquet::arrow::ProjectionMask, physical_plan::SendableRecordBatchStream};
-use datafusion_util::{AdapterStream, AutoAbortJoinHandle};
+use datafusion_util::{watch::WatchedTask, AdapterStream};
 use futures::{Stream, TryStreamExt};
 use object_store::{DynObjectStore, GetResult};
 use observability_deps::tracing::*;
@@ -22,7 +22,7 @@ use parquet::{
     file::reader::SerializedFileReader,
 };
 use predicate::Predicate;
-use schema::selection::Selection;
+use schema::selection::{select_schema, Selection};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
@@ -179,11 +179,8 @@ impl ParquetStorage {
         let path = path.object_store_path();
         trace!(path=?path, "fetching parquet data for filtered read");
 
-        // Indices of columns in the schema needed to read
-        let projection: Vec<usize> = column_indices(selection, Arc::clone(&schema));
-
         // Compute final (output) schema after selection
-        let schema = Arc::new(project_schema(&schema, &projection));
+        let schema = select_schema(selection, &schema);
 
         let (tx, rx) = tokio::sync::mpsc::channel(2);
 
@@ -192,27 +189,28 @@ impl ParquetStorage {
         // not silently ignored
         let object_store = Arc::clone(&self.object_store);
         let schema_captured = Arc::clone(&schema);
-        let handle = tokio::task::spawn(async move {
+        let tx_captured = tx.clone();
+        let fut = async move {
             let download_result =
-                download_and_scan_parquet(schema_captured, path, object_store, tx.clone()).await;
+                download_and_scan_parquet(schema_captured, path, object_store, tx_captured.clone())
+                    .await;
 
             // If there was an error returned from download_and_scan_parquet send it back to the receiver.
             if let Err(e) = download_result {
                 warn!(error=%e, "Parquet download & scan failed");
                 let e = ArrowError::ExternalError(Box::new(e));
-                if let Err(e) = tx.send(ArrowResult::Err(e)).await {
+                if let Err(e) = tx_captured.send(ArrowResult::Err(e)).await {
                     // if no one is listening, there is no one else to hear our screams
                     debug!(%e, "Error sending result of download function. Receiver is closed.");
                 }
             }
-        });
+
+            Ok(())
+        };
+        let handle = WatchedTask::new(fut, vec![tx], "download and scan parquet");
 
         // returned stream simply reads off the rx channel
-        Ok(AdapterStream::adapt(
-            schema,
-            rx,
-            Some(Arc::new(AutoAbortJoinHandle::new(handle))),
-        ))
+        Ok(AdapterStream::adapt(schema, rx, handle))
     }
 
     /// Read all data from the parquet file.
@@ -223,35 +221,6 @@ impl ParquetStorage {
     ) -> Result<SendableRecordBatchStream, ReadError> {
         self.read_filter(&Predicate::default(), Selection::All, schema, path)
     }
-}
-
-/// Return indices of the schema's fields of the selection columns
-fn column_indices(selection: Selection<'_>, schema: SchemaRef) -> Vec<usize> {
-    match selection {
-        Selection::Some(cols) => {
-            let fields_lookup: HashMap<_, _> = schema
-                .fields()
-                .iter()
-                .map(|f| f.name().as_str())
-                .enumerate()
-                .map(|(v, k)| (k, v))
-                .collect();
-            cols.iter()
-                .filter_map(|c| fields_lookup.get(c).cloned())
-                .collect()
-        }
-        Selection::All => (0..schema.fields().len()).collect(),
-    }
-}
-
-fn project_schema(schema: &Schema, projection: &[usize]) -> Schema {
-    Schema::new_with_metadata(
-        projection
-            .iter()
-            .map(|i| schema.field(*i).clone())
-            .collect(),
-        schema.metadata().clone(),
-    )
 }
 
 /// Downloads the specified parquet file to a local temporary file
@@ -269,8 +238,9 @@ async fn download_and_scan_parquet(
     let read_stream = object_store.get(&path).await?;
 
     let data = match read_stream {
-        GetResult::File(mut f, _) => {
+        GetResult::File(f, _) => {
             trace!(?path, "Using file directly");
+            let mut f = tokio::fs::File::from_std(f);
             let l = f.metadata().await?.len();
             let mut buf = Vec::with_capacity(l as usize);
             f.read_to_end(&mut buf).await?;
@@ -409,14 +379,14 @@ fn project_for_parquet_reader(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-
     use arrow::array::{ArrayRef, Int64Builder, StringBuilder};
-    use data_types::{NamespaceId, PartitionId, SequenceNumber, SequencerId, TableId};
+    use data_types::{
+        CompactionLevel, NamespaceId, PartitionId, SequenceNumber, SequencerId, TableId,
+    };
     use datafusion::common::DataFusionError;
     use iox_time::Time;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn test_upload_metadata() {
@@ -779,7 +749,7 @@ mod tests {
             partition_key: "potato".into(),
             min_sequence_number: SequenceNumber::new(10),
             max_sequence_number: SequenceNumber::new(11),
-            compaction_level: 1,
+            compaction_level: CompactionLevel::FileNonOverlapped,
             sort_key: None,
         }
     }

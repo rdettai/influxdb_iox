@@ -23,6 +23,7 @@ members = [
     "ingester",
     "iox_catalog",
     "iox_data_generator",
+    "iox_objectstore_garbage_collect",
     "iox_query",
     "iox_tests",
     "iox_time",
@@ -113,3 +114,7 @@ inherits = "release"
 codegen-units = 16
 lto = false
 incremental = true
+
+[patch.crates-io]
+# remove and bump object_store dep version once this revision is released.
+object_store = { git = 'https://github.com/influxdata/object_store_rs', rev = "3c51870ac41a90942c2e45bb499a893d514ed1da"}

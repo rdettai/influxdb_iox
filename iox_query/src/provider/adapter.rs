@@ -19,9 +19,15 @@ use futures::Stream;
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("Internal error creating SchemaAdapterStream: field '{}' does not appear in the output schema",
-                    field_name,))]
-    InternalLostInputField { field_name: String },
+    #[snafu(display(
+        "Internal error creating SchemaAdapterStream: field '{}' does not appear in the output schema, known fields are: {:?}",
+        field_name,
+        known_fields,
+    ))]
+    InternalLostInputField {
+        field_name: String,
+        known_fields: Vec<String>,
+    },
 
     #[snafu(display("Internal error creating SchemaAdapterStream: input field '{}' had type '{:?}' which is different than output field '{}' which had type '{:?}'",
                     input_field_name, input_field_type, output_field_name, output_field_type,))]
@@ -139,6 +145,11 @@ impl SchemaAdapterStream {
             {
                 return InternalLostInputFieldSnafu {
                     field_name: input_field.name(),
+                    known_fields: output_schema
+                        .fields()
+                        .iter()
+                        .map(|f| f.name().clone())
+                        .collect::<Vec<String>>(),
                 }
                 .fail();
             }
@@ -305,9 +316,9 @@ mod tests {
         // input has subset of columns of the desired otuput. d and e are not present
         let output_schema = Arc::new(Schema::new(vec![
             Field::new("c", DataType::Utf8, false),
-            Field::new("e", DataType::Float64, false),
+            Field::new("e", DataType::Float64, true),
             Field::new("b", DataType::Int32, false),
-            Field::new("d", DataType::Float32, false),
+            Field::new("d", DataType::Float32, true),
             Field::new("a", DataType::Int32, false),
         ]));
         let input_stream = stream_from_batch(batch);

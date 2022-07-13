@@ -326,9 +326,11 @@ where
                 "decoded dml operation"
             );
 
-            // Extract the producer timestamp (added in the router when
-            // dispatching the request).
-            let produced_at = op.meta().producer_ts();
+            // Calculate how long it has been since production by
+            // checking the producer timestamp (added in the router
+            // when dispatching the request).
+            let duration_since_production =
+                op.meta().duration_since_production(&self.time_provider);
 
             let should_pause = match self.sink.apply(op).await {
                 Ok(should_pause) => {
@@ -353,10 +355,8 @@ where
                 }
             };
 
-            // Update the TTBR metric before potentially sleeping.
-            if let Some(delta) =
-                produced_at.and_then(|ts| self.time_provider.now().checked_duration_since(ts))
-            {
+            if let Some(delta) = duration_since_production {
+                // Update the TTBR metric before potentially sleeping.
                 self.time_to_be_readable.set(delta);
             }
 
@@ -443,16 +443,15 @@ mod tests {
     use iox_time::{SystemProvider, Time};
     use metric::Metric;
     use mutable_batch_lp::lines_to_batches;
+    use once_cell::sync::Lazy;
     use std::sync::Arc;
     use test_helpers::timeout::FutureTimeout;
     use tokio::sync::{mpsc, oneshot};
     use tokio_stream::wrappers::ReceiverStream;
     use write_buffer::core::WriteBufferError;
 
-    lazy_static::lazy_static! {
-        static ref TEST_TIME: Time = SystemProvider::default().now();
-        static ref TEST_KAFKA_PARTITION: KafkaPartition = KafkaPartition::new(42);
-    }
+    static TEST_TIME: Lazy<Time> = Lazy::new(|| SystemProvider::default().now());
+    static TEST_KAFKA_PARTITION: Lazy<KafkaPartition> = Lazy::new(|| KafkaPartition::new(42));
     static TEST_KAFKA_TOPIC: &str = "kafka_topic_name";
 
     // Return a DmlWrite with the given namespace and a single table.

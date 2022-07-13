@@ -93,9 +93,11 @@ impl GarbageCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use data_types::{ColumnSet, KafkaPartition, ParquetFile, ParquetFileParams, SequenceNumber};
+    use data_types::{
+        ColumnId, ColumnSet, CompactionLevel, KafkaPartition, ParquetFile, ParquetFileParams,
+        SequenceNumber,
+    };
     use futures::{StreamExt, TryStreamExt};
-    use iox_catalog::interface::INITIAL_COMPACTION_LEVEL;
     use iox_tests::util::TestCatalog;
     use std::time::Duration;
     use uuid::Uuid;
@@ -184,8 +186,8 @@ mod tests {
             file_size_bytes: 1337,
             row_count: 0,
             created_at: Timestamp::new(1),
-            compaction_level: INITIAL_COMPACTION_LEVEL,
-            column_set: ColumnSet::new(["col1", "col2"]),
+            compaction_level: CompactionLevel::Initial,
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = txn
             .parquet_files()
@@ -266,8 +268,8 @@ mod tests {
             file_size_bytes: 1337,
             row_count: 0,
             created_at: Timestamp::new(1),
-            compaction_level: INITIAL_COMPACTION_LEVEL,
-            column_set: ColumnSet::new(["col1", "col2"]),
+            compaction_level: CompactionLevel::Initial,
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = txn
             .parquet_files()
@@ -352,8 +354,8 @@ mod tests {
             file_size_bytes: 1337,
             row_count: 0,
             created_at: Timestamp::new(1),
-            compaction_level: INITIAL_COMPACTION_LEVEL,
-            column_set: ColumnSet::new(["col1", "col2"]),
+            compaction_level: CompactionLevel::Initial,
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         let parquet_file = txn
             .parquet_files()

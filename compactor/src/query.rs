@@ -11,7 +11,7 @@ use iox_query::{
 };
 use observability_deps::tracing::trace;
 use parquet_file::chunk::ParquetChunk;
-use predicate::{delete_predicate::tombstones_to_delete_predicates, Predicate, PredicateMatch};
+use predicate::{delete_predicate::tombstones_to_delete_predicates, Predicate};
 use schema::{merge::SchemaMerger, selection::Selection, sort::SortKey, Schema};
 use snafu::{ResultExt, Snafu};
 use std::sync::Arc;
@@ -118,7 +118,7 @@ impl QueryableParquetChunk {
 }
 
 impl QueryChunkMeta for QueryableParquetChunk {
-    fn summary(&self) -> Option<&TableSummary> {
+    fn summary(&self) -> Option<Arc<TableSummary>> {
         None
     }
 
@@ -175,19 +175,6 @@ impl QueryChunk for QueryableParquetChunk {
     fn may_contain_pk_duplicates(&self) -> bool {
         // data within this parquet chunk was deduplicated
         false
-    }
-
-    /// Returns the result of applying the `predicate` to the chunk
-    /// using an efficient, but inexact method, based on metadata.
-    ///
-    /// NOTE: This method is suitable for calling during planning, and
-    /// may return PredicateMatch::Unknown for certain types of
-    /// predicates.
-    fn apply_predicate_to_metadata(
-        &self,
-        _predicate: &Predicate,
-    ) -> Result<PredicateMatch, QueryChunkError> {
-        Ok(PredicateMatch::Unknown)
     }
 
     /// Returns a set of Strings with column names from the specified
@@ -253,12 +240,7 @@ impl QueryChunk for QueryableParquetChunk {
 
     // Order of the chunk so they can be deduplicate correctly
     fn order(&self) -> ChunkOrder {
-        let seq_num = self.min_sequence_number.get();
-        ChunkOrder::new(seq_num).unwrap_or_else(|| {
-            panic!(
-                "Error converting sequence number {} to ChunkOrder for partition {}",
-                seq_num, self.partition_id
-            );
-        })
+        let seq_num = self.max_sequence_number.get();
+        ChunkOrder::new(seq_num)
     }
 }

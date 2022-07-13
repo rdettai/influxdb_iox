@@ -1,23 +1,25 @@
-use std::sync::Arc;
-
+use super::QuerierTable;
+use crate::{
+    cache::CatalogCache, chunk::ChunkAdapter, create_ingester_connection_for_testing,
+    IngesterPartition, QuerierChunkLoadSetting,
+};
 use arrow::record_batch::RecordBatch;
-use data_types::{ChunkId, SequenceNumber};
+use data_types::{ChunkId, KafkaPartition, ParquetFileId, SequenceNumber};
 use iox_catalog::interface::get_schema_by_name;
 use iox_tests::util::{TestCatalog, TestPartition, TestSequencer, TestTable};
 use mutable_batch_lp::test_helpers::lp_to_mutable_batch;
 use parquet_file::storage::ParquetStorage;
 use schema::{selection::Selection, sort::SortKey, Schema};
-
-use crate::{
-    cache::CatalogCache, chunk::ChunkAdapter, create_ingester_connection_for_testing,
-    IngesterPartition,
-};
-
-use super::QuerierTable;
+use sharder::JumpHash;
+use std::{collections::HashMap, sync::Arc};
 
 /// Create a [`QuerierTable`] for testing.
-pub async fn querier_table(catalog: &Arc<TestCatalog>, table: &Arc<TestTable>) -> QuerierTable {
-    let catalog_cache = Arc::new(CatalogCache::new(
+pub async fn querier_table(
+    catalog: &Arc<TestCatalog>,
+    table: &Arc<TestTable>,
+    load_settings: HashMap<ParquetFileId, QuerierChunkLoadSetting>,
+) -> QuerierTable {
+    let catalog_cache = Arc::new(CatalogCache::new_testing(
         catalog.catalog(),
         catalog.time_provider(),
         catalog.metric_registry(),
@@ -27,7 +29,7 @@ pub async fn querier_table(catalog: &Arc<TestCatalog>, table: &Arc<TestTable>) -
         catalog_cache,
         ParquetStorage::new(catalog.object_store()),
         catalog.metric_registry(),
-        catalog.time_provider(),
+        load_settings,
     ));
 
     let mut repos = catalog.catalog.repositories().await;
@@ -40,11 +42,12 @@ pub async fn querier_table(catalog: &Arc<TestCatalog>, table: &Arc<TestTable>) -
     let namespace_name = Arc::from(table.namespace.namespace.name.as_str());
 
     QuerierTable::new(
+        Arc::new(JumpHash::new((0..1).map(KafkaPartition::new).map(Arc::new)).unwrap()),
         namespace_name,
         table.table.id,
         table.table.name.clone().into(),
         schema,
-        create_ingester_connection_for_testing(),
+        Some(create_ingester_connection_for_testing()),
         chunk_adapter,
     )
 }

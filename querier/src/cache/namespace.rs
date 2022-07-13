@@ -11,7 +11,7 @@ use cache_system::{
     cache::{driver::CacheDriver, metrics::CacheWithMetrics, Cache},
     loader::{metrics::MetricsLoader, FunctionLoader},
 };
-use data_types::NamespaceSchema;
+use data_types::{ColumnId, NamespaceSchema};
 use iox_catalog::interface::{get_schema_by_name, Catalog};
 use iox_time::TimeProvider;
 use std::{
@@ -27,7 +27,15 @@ use super::ram::RamSize;
 pub const TTL_EXISTING: Duration = Duration::from_secs(10);
 
 /// Duration to keep non-existing namespaces.
-pub const TTL_NON_EXISTING: Duration = Duration::from_secs(60);
+///
+/// TODO(marco): Caching non-existing namespaces is virtually disabled until
+///              <https://github.com/influxdata/influxdb_iox/issues/4617> is implemented because the flux integration
+///              tests fail otherwise, see <https://github.com/influxdata/conductor/issues/997>.
+///              The very short duration is only used so that tests can assert easily that non-existing entries have
+///              SOME TTL mechanism attached.
+///              The TTL is not relevant for prod at the moment because other layers should prevent/filter queries for
+///              non-existing namespaces.
+pub const TTL_NON_EXISTING: Duration = Duration::from_nanos(1);
 
 const CACHE_ID: &str = "namespace";
 
@@ -48,6 +56,7 @@ impl NamespaceCache {
         time_provider: Arc<dyn TimeProvider>,
         metric_registry: &metric::Registry,
         ram_pool: Arc<ResourcePool<RamSize>>,
+        testing: bool,
     ) -> Self {
         let loader = Box::new(FunctionLoader::new(
             move |namespace_name: Arc<str>, _extra: ()| {
@@ -80,6 +89,7 @@ impl NamespaceCache {
             CACHE_ID,
             Arc::clone(&time_provider),
             metric_registry,
+            testing,
         ));
 
         let backend = Box::new(TtlBackend::new(
@@ -127,14 +137,13 @@ impl NamespaceCache {
     pub async fn schema(
         &self,
         name: Arc<str>,
-        should_cover: &[(&str, &HashSet<&str>)],
+        should_cover: &[(&str, &HashSet<ColumnId>)],
     ) -> Option<Arc<NamespaceSchema>> {
         self.backend.remove_if(&name, |cached_namespace| {
             if let Some(namespace) = cached_namespace.as_ref() {
                 should_cover.iter().any(|(table_name, columns)| {
                     if let Some(table) = namespace.schema.tables.get(*table_name) {
-                        let covered: HashSet<_> =
-                            table.columns.keys().map(|s| s.as_str()).collect();
+                        let covered: HashSet<_> = table.columns.values().map(|c| c.id).collect();
                         columns.iter().any(|col| !covered.contains(col))
                     } else {
                         // table unknown => need to update
@@ -201,6 +210,7 @@ mod tests {
             catalog.time_provider(),
             &catalog.metric_registry(),
             test_ram_pool(),
+            true,
         );
 
         let schema1_a = cache
@@ -322,6 +332,7 @@ mod tests {
             catalog.time_provider(),
             &catalog.metric_registry(),
             test_ram_pool(),
+            true,
         );
 
         let none = cache.schema(Arc::from(String::from("foo")), &[]).await;
@@ -350,6 +361,7 @@ mod tests {
             catalog.time_provider(),
             &catalog.metric_registry(),
             test_ram_pool(),
+            true,
         );
 
         // ========== namespace unknown ==========
@@ -396,8 +408,8 @@ mod tests {
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 5);
 
         // ========== some columns ==========
-        t1.create_column("c1", ColumnType::Bool).await;
-        t1.create_column("c2", ColumnType::Bool).await;
+        let c1 = t1.create_column("c1", ColumnType::Bool).await;
+        let c2 = t1.create_column("c2", ColumnType::Bool).await;
 
         assert!(cache
             .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
@@ -406,13 +418,13 @@ mod tests {
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 5);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from(["c1"]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([c1.column.id]))])
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 6);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from(["c2"]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([c2.column.id]))])
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 6);

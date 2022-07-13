@@ -15,13 +15,17 @@ use data_types::{Sequence, SequenceNumber};
 use dml::{DmlMeta, DmlOperation};
 use futures::{stream::BoxStream, StreamExt};
 use iox_time::{Time, TimeProvider};
+use observability_deps::tracing::warn;
 use parking_lot::Mutex;
-use rskafka::client::{
-    consumer::{StartOffset, StreamConsumerBuilder},
-    error::{Error as RSKafkaError, ProtocolError},
-    partition::{OffsetAt, PartitionClient},
-    producer::{BatchProducer, BatchProducerBuilder},
-    ClientBuilder,
+use rskafka::{
+    client::{
+        consumer::{StartOffset, StreamConsumerBuilder},
+        error::{Error as RSKafkaError, ProtocolError},
+        partition::{OffsetAt, PartitionClient},
+        producer::{BatchProducer, BatchProducerBuilder},
+        ClientBuilder,
+    },
+    record::RecordAndOffset,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -34,6 +38,9 @@ use trace::TraceCollector;
 
 mod aggregator;
 mod config;
+
+/// Maximum number of jobs buffered and decoded concurrently.
+const CONCURRENT_DECODE_JOBS: usize = 10;
 
 type Result<T, E = WriteBufferError> = std::result::Result<T, E>;
 
@@ -93,7 +100,7 @@ impl WriteBufferWriting for RSKafkaProducer {
     async fn store_operation(
         &self,
         sequencer_id: u32,
-        operation: &DmlOperation,
+        operation: DmlOperation,
     ) -> Result<DmlMeta, WriteBufferError> {
         let producer = self
             .producers
@@ -102,8 +109,7 @@ impl WriteBufferWriting for RSKafkaProducer {
                 format!("Unknown partition: {}", sequencer_id).into()
             })?;
 
-        // TODO: don't clone!
-        Ok(producer.produce(operation.clone()).await?)
+        Ok(producer.produce(operation).await?)
     }
 
     async fn flush(&self) -> Result<(), WriteBufferError> {
@@ -126,6 +132,63 @@ pub struct RSKafkaStreamHandler {
     trace_collector: Option<Arc<dyn TraceCollector>>,
     consumer_config: ConsumerConfig,
     sequencer_id: u32,
+}
+
+/// Launch a tokio task that attempts to decode a DmlOperation from a
+/// record.
+///
+/// Returns the offset (if a record was read successfully) and the
+/// result of decoding. Note that `Some(offset)` is returned even if
+/// there is an error decoding the data in the record, but not if
+/// there was an error reading the record in the first place.
+async fn try_decode(
+    record: Result<RecordAndOffset, WriteBufferError>,
+    sequencer_id: u32,
+    trace_collector: Option<Arc<dyn TraceCollector>>,
+) -> (Option<i64>, Result<DmlOperation, WriteBufferError>) {
+    let offset = match &record {
+        Ok(record) => Some(record.offset),
+        Err(_) => None,
+    };
+
+    // launch a task to try and do the decode (which is CPU intensive)
+    // in parallel
+    let result = tokio::task::spawn(async move {
+        let record = record?;
+        let kafka_read_size = record.record.approximate_size();
+
+        let headers = IoxHeaders::from_headers(record.record.headers, trace_collector.as_ref())?;
+
+        let sequence = Sequence {
+            sequencer_id,
+            sequence_number: SequenceNumber::new(record.offset),
+        };
+
+        let timestamp_nanos = i64::try_from(record.record.timestamp.unix_timestamp_nanos())
+            .map_err(WriteBufferError::invalid_data)?;
+
+        let timestamp = Time::from_timestamp_nanos(timestamp_nanos);
+
+        let value = record
+            .record
+            .value
+            .ok_or_else::<WriteBufferError, _>(|| "Value missing".to_string().into())?;
+        crate::codec::decode(&value, headers, sequence, timestamp, kafka_read_size)
+    })
+    .await;
+
+    // Convert panics in the task to WriteBufferErrors
+    let dml_result = match result {
+        Err(e) => {
+            warn!(%e, "Decode panic");
+            // Was a join error (aka the task panic'd()
+            Err(WriteBufferError::unknown(e))
+        }
+        // normal error in the task, use that
+        Ok(res) => res,
+    };
+
+    (offset, dml_result)
 }
 
 #[async_trait]
@@ -163,6 +226,29 @@ impl WriteBufferStreamHandler for RSKafkaStreamHandler {
 
         let sequencer_id = self.sequencer_id;
 
+        // Use buffered streams to pipeline the reading of a message from kafka from with its decoding.
+        //
+        // ┌─────┬──────┬──────┬─────┬──────┬──────┬─────┬──────┬──────┐
+        // │ Read│ Read │ Read │ Read│ Read │ Read │ Read│ Read │ Read │
+        // │Kafka│Kafka │Kafka │Kafka│Kafka │Kafka │Kafka│Kafka │Kafka │
+        // │     │      │      │     │      │      │     │      │      │
+        // └─────┴──────┴──────┴─────┴──────┴──────┴─────┴──────┴──────┘
+        //
+        // ┌──────────────────┐
+        // │                  │
+        // │      Decode      │
+        // │                  │
+        // └──────────────────┘
+        //  ... up to 10 ..
+        //    ┌──────────────────┐
+        //    │                  │
+        //    │      Decode      │
+        //    │                  │
+        //    └──────────────────┘
+        //
+        // ─────────────────────────────────────────────────────────────────────────▶  Time
+
+        // this stream reads `RecordAndOffset` from kafka
         let stream = stream.map(move |res| {
             let (record, _watermark) = match res {
                 Ok(x) => x,
@@ -177,39 +263,36 @@ impl WriteBufferStreamHandler for RSKafkaStreamHandler {
                     return Err(WriteBufferError::new(kind, e));
                 }
             };
-
-            // store new offset already so we don't get stuck on invalid records
-            *next_offset.lock() = Some(record.offset + 1);
-
-            let kafka_read_size = record.record.approximate_size();
-
-            let headers =
-                IoxHeaders::from_headers(record.record.headers, trace_collector.as_ref())?;
-
-            let sequence = Sequence {
-                sequencer_id,
-                sequence_number: SequenceNumber::new(record.offset),
-            };
-
-            let timestamp_millis =
-                i64::try_from(record.record.timestamp.unix_timestamp_nanos() / 1_000_000)
-                    .map_err(WriteBufferError::invalid_data)?;
-
-            let timestamp = Time::from_timestamp_millis_opt(timestamp_millis)
-                .ok_or_else::<WriteBufferError, _>(|| {
-                    format!(
-                        "Cannot parse timestamp for milliseconds: {}",
-                        timestamp_millis
-                    )
-                    .into()
-                })?;
-
-            let value = record
-                .record
-                .value
-                .ok_or_else::<WriteBufferError, _>(|| "Value missing".to_string().into())?;
-            crate::codec::decode(&value, headers, sequence, timestamp, kafka_read_size)
+            Ok(record)
         });
+
+        // Now decode the records in a second, parallel step by making
+        // a stream of futures and [`FuturesExt::buffered`].
+        let stream = stream
+            .map(move |record| {
+                // appease borrow checker
+                let trace_collector = trace_collector.clone();
+                try_decode(record, sequencer_id, trace_collector)
+            })
+            // the decode jobs in parallel
+            // (`buffered` does NOT reorder, so the API user still gets an ordered stream)
+            .buffered(CONCURRENT_DECODE_JOBS)
+            .map(move |(offset, dml_result)| {
+                // but only update the offset when a decoded recorded
+                // is actually returned to the consumer of the stream
+                // (not when it was decoded or when it was read from
+                // kafka). This is to ensure that if a new stream is
+                // created, we do not lose records that were never
+                // consumed.
+                //
+                // Note that we update the offset as long as a record was
+                // read (even if there was an error decoding) so we don't
+                // get stuck on invalid records
+                if let Some(offset) = offset {
+                    *next_offset.lock() = Some(offset + 1);
+                }
+                dml_result
+            });
         stream.boxed()
     }
 
@@ -687,7 +770,7 @@ mod tests {
 
         let sequencer_id = set_pop_first(&mut producer.sequencer_ids()).unwrap();
 
-        let (w1, w2, w3) = tokio::join!(
+        let (w1, w2, w3, w4) = tokio::join!(
             // These two ops have the same partition key, and therefore can be
             // merged together.
             write("ns1", &producer, &trace_collector, sequencer_id, "bananas"),
@@ -695,11 +778,14 @@ mod tests {
             // However this op has a different partition_key and cannot be
             // merged with the others.
             write("ns1", &producer, &trace_collector, sequencer_id, "platanos"),
+            // this operation can still go into the first write, no need to start yet another one
+            write("ns1", &producer, &trace_collector, sequencer_id, "bananas"),
         );
 
-        // Assert ops 1 and 2 were merged, by asserting they have the same
+        // Assert ops 1+2+4 were merged, by asserting they have the same
         // sequence number.
         assert_eq!(w1.sequence().unwrap(), w2.sequence().unwrap());
+        assert_eq!(w1.sequence().unwrap(), w4.sequence().unwrap());
 
         // And assert the third op was not merged because of the differing
         // partition key.
@@ -720,7 +806,7 @@ mod tests {
 
         let sequencer_id = set_pop_first(&mut producer.sequencer_ids()).unwrap();
         producer
-            .store_operation(sequencer_id, &DmlOperation::Write(write))
+            .store_operation(sequencer_id, DmlOperation::Write(write))
             .await
             .unwrap();
     }
@@ -741,7 +827,7 @@ mod tests {
             DmlMeta::unsequenced(Some(span_ctx)),
         );
         let op = DmlOperation::Write(write);
-        producer.store_operation(sequencer_id, &op).await.unwrap()
+        producer.store_operation(sequencer_id, op).await.unwrap()
     }
 
     async fn delete(
@@ -760,6 +846,6 @@ mod tests {
             None,
             DmlMeta::unsequenced(Some(span_ctx)),
         ));
-        producer.store_operation(sequencer_id, &op).await.unwrap()
+        producer.store_operation(sequencer_id, op).await.unwrap()
     }
 }

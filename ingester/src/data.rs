@@ -14,7 +14,7 @@ use data_types::{
 use datafusion::physical_plan::SendableRecordBatchStream;
 use dml::DmlOperation;
 use futures::{Stream, StreamExt};
-use iox_catalog::interface::Catalog;
+use iox_catalog::interface::{get_table_schema_by_id, Catalog};
 use iox_query::exec::Executor;
 use iox_time::SystemProvider;
 use metric::U64Counter;
@@ -234,6 +234,21 @@ impl Persister for IngesterData {
             });
         debug!(?partition_id, ?partition_info, "Persisting");
 
+        // lookup column IDs from catalog
+        // TODO: this can be removed once the ingester uses column IDs internally as well
+        let table_schema = Backoff::new(&self.backoff_config)
+            .retry_all_errors("get table schema", || async {
+                let mut repos = self.catalog.repositories().await;
+                let table = repos
+                    .tables()
+                    .get_by_namespace_and_name(namespace.namespace_id, &partition_info.table_name)
+                    .await?
+                    .expect("table not found in catalog");
+                get_table_schema_by_id(table.id, repos.as_mut()).await
+            })
+            .await
+            .expect("retry forever");
+
         let persisting_batch = namespace.snapshot_to_persisting(&partition_info).await;
 
         if let Some(persisting_batch) = persisting_batch {
@@ -274,7 +289,9 @@ impl Persister for IngesterData {
                 .expect("unexpected fatal persist error");
 
             // Add the parquet file to the catalog until succeed
-            let parquet_file = iox_meta.to_parquet_file(partition_id, file_size, &md);
+            let parquet_file = iox_meta.to_parquet_file(partition_id, file_size, &md, |name| {
+                table_schema.columns.get(name).expect("Unknown column").id
+            });
             Backoff::new(&self.backoff_config)
                 .retry_all_errors("add parquet file to catalog", || async {
                     let mut repos = self.catalog.repositories().await;
@@ -1638,14 +1655,13 @@ mod tests {
     use arrow_util::assert_batches_sorted_eq;
     use assert_matches::assert_matches;
     use data_types::{
-        ColumnSet, NamespaceSchema, NonEmptyString, ParquetFileParams, Sequence, TimestampRange,
+        ColumnId, ColumnSet, CompactionLevel, NamespaceSchema, NonEmptyString, ParquetFileParams,
+        Sequence, TimestampRange,
     };
     use datafusion::physical_plan::RecordBatchStream;
     use dml::{DmlDelete, DmlMeta, DmlWrite};
     use futures::TryStreamExt;
-    use iox_catalog::{
-        interface::INITIAL_COMPACTION_LEVEL, mem::MemCatalog, validate_or_insert_schema,
-    };
+    use iox_catalog::{mem::MemCatalog, validate_or_insert_schema};
     use iox_time::Time;
     use metric::{MetricObserver, Observation};
     use mutable_batch_lp::{lines_to_batches, test_helpers::lp_to_mutable_batch};
@@ -2474,9 +2490,9 @@ mod tests {
             max_time: Timestamp::new(1),
             file_size_bytes: 0,
             row_count: 0,
-            compaction_level: INITIAL_COMPACTION_LEVEL,
+            compaction_level: CompactionLevel::Initial,
             created_at: Timestamp::new(1),
-            column_set: ColumnSet::new(["col1", "col2"]),
+            column_set: ColumnSet::new([ColumnId::new(1), ColumnId::new(2)]),
         };
         repos
             .parquet_files()

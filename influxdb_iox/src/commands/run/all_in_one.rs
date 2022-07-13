@@ -6,11 +6,12 @@ use clap_blocks::{
     compactor::CompactorConfig,
     ingester::IngesterConfig,
     object_store::{make_object_store, ObjectStoreConfig},
-    querier::QuerierConfig,
+    querier::{IngesterAddresses, QuerierConfig},
     run_config::RunConfig,
     socket_addr::SocketAddr,
     write_buffer::WriteBufferConfig,
 };
+use data_types::IngesterMapping;
 use iox_query::exec::Executor;
 use iox_time::{SystemProvider, TimeProvider};
 use ioxd_common::{
@@ -391,15 +392,18 @@ impl Config {
             topic: QUERY_POOL_NAME.to_string(),
             write_buffer_partition_range_start,
             write_buffer_partition_range_end,
-            split_percentage: 90,
+            compaction_max_number_level_0_files: 3,
+            compaction_max_desired_file_size_bytes: 30000,
+            compaction_percentage_max_file_size: 30,
+            compaction_split_percentage: 80,
             max_concurrent_compaction_size_bytes: 100000,
-            compaction_max_size_bytes: 100000,
-            compaction_max_file_count: 10,
         };
 
         let querier_config = QuerierConfig {
-            num_query_threads: None,    // will be ignored
-            ingester_addresses: vec![], // will be ignored
+            num_query_threads: None,           // will be ignored
+            ingester_addresses: vec![],        // will be ignored
+            sequencer_to_ingesters_file: None, // will be ignored
+            sequencer_to_ingesters: None,      // will be ignored
             ram_pool_bytes: querier_ram_pool_bytes,
             max_concurrent_queries: querier_max_concurrent_queries,
         };
@@ -518,7 +522,16 @@ pub async fn command(config: Config) -> Result<()> {
     )
     .await?;
 
-    let ingester_addresses = vec![format!("http://{}", ingester_run_config.grpc_bind_address)];
+    let ingester_addresses = IngesterAddresses::BySequencer(
+        [(
+            0,
+            IngesterMapping::Addr(Arc::from(
+                format!("http://{}", ingester_run_config.grpc_bind_address).as_str(),
+            )),
+        )]
+        .into_iter()
+        .collect(),
+    );
     info!(?ingester_addresses, "starting querier");
     let querier = create_querier_server_type(QuerierServerTypeArgs {
         common_state: &common_state,

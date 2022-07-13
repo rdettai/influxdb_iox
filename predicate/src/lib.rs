@@ -13,19 +13,27 @@ pub mod delete_predicate;
 pub mod rewrite;
 pub mod rpc_predicate;
 
-use data_types::{TimestampRange, MAX_NANO_TIME, MIN_NANO_TIME};
+use arrow::{
+    array::{
+        BooleanArray, Float64Array, Int64Array, StringArray, TimestampNanosecondArray, UInt64Array,
+    },
+    datatypes::SchemaRef,
+};
+use data_types::{InfluxDbType, TableSummary, TimestampRange};
 use datafusion::{
     error::DataFusionError,
     logical_expr::{binary_expr, utils::expr_to_columns},
     logical_plan::{col, lit_timestamp_nano, Expr, Operator},
+    physical_optimizer::pruning::{PruningPredicate, PruningStatistics},
 };
-use datafusion_util::{make_range_expr, AndExprBuilder};
+use datafusion_util::{make_range_expr, nullable_schema, AndExprBuilder};
 use observability_deps::tracing::debug;
 use rpc_predicate::VALUE_COLUMN_NAME;
 use schema::TIME_COLUMN_NAME;
 use std::{
     collections::{BTreeSet, HashSet},
     fmt,
+    sync::Arc,
 };
 
 /// This `Predicate` represents the empty predicate (aka that evaluates to true for all rows).
@@ -33,7 +41,6 @@ pub const EMPTY_PREDICATE: Predicate = Predicate {
     field_columns: None,
     exprs: vec![],
     range: None,
-    partition_key: None,
     value_expr: vec![],
 };
 
@@ -66,9 +73,6 @@ pub struct Predicate {
     /// Optional field restriction. If present, restricts the results to only
     /// tables which have *at least one* of the fields in field_columns.
     pub field_columns: Option<BTreeSet<String>>,
-
-    /// Optional partition key filter
-    pub partition_key: Option<String>,
 
     /// Optional timestamp range: only rows within this range are included in
     /// results. Other rows are excluded
@@ -216,7 +220,7 @@ impl Predicate {
     /// existing storage engine
     pub(crate) fn with_clear_timestamp_if_max_range(mut self) -> Self {
         self.range = self.range.take().and_then(|range| {
-            if range.start() <= MIN_NANO_TIME && range.end() >= MAX_NANO_TIME {
+            if range.contains_all() {
                 None
             } else {
                 Some(range)
@@ -224,6 +228,131 @@ impl Predicate {
         });
 
         self
+    }
+
+    /// Apply predicate to given table summary.
+    pub fn apply_to_table_summary(
+        &self,
+        table_summary: &TableSummary,
+        schema: SchemaRef,
+    ) -> PredicateMatch {
+        let summary = SummaryWrapper {
+            summary: table_summary,
+        };
+
+        // If we don't have statistics for a particular column, its
+        // value will be null, so we need to ensure the schema we used
+        // in pruning predicates allows for null.
+        let schema = nullable_schema(schema);
+
+        if let Some(expr) = self.filter_expr() {
+            match PruningPredicate::try_new(expr.clone(), Arc::clone(&schema)) {
+                Ok(pp) => {
+                    match pp.prune(&summary) {
+                        Ok(matched) => {
+                            assert_eq!(matched.len(), 1);
+                            if matched[0] {
+                                // might match
+                                return PredicateMatch::Unknown;
+                            } else {
+                                // does not match => since expressions are `AND`ed, we know that we will have zero matches
+                                return PredicateMatch::Zero;
+                            }
+                        }
+                        Err(e) => {
+                            debug!(
+                                %e,
+                                %expr,
+                                "cannot prune summary with PruningPredicate",
+                            );
+                            return PredicateMatch::Unknown;
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        %e,
+                        %expr,
+                        "cannot create PruningPredicate from expression",
+                    );
+                    return PredicateMatch::Unknown;
+                }
+            }
+        }
+
+        PredicateMatch::Unknown
+    }
+}
+
+struct SummaryWrapper<'a> {
+    summary: &'a TableSummary,
+}
+
+impl<'a> PruningStatistics for SummaryWrapper<'a> {
+    fn min_values(
+        &self,
+        column: &datafusion::logical_plan::Column,
+    ) -> Option<arrow::array::ArrayRef> {
+        let col = self.summary.column(&column.name)?;
+        let stats = &col.stats;
+
+        // special handling for timestamps
+        if col.influxdb_type == Some(InfluxDbType::Timestamp) {
+            let val = stats.as_i64()?;
+            return Some(Arc::new(TimestampNanosecondArray::from(vec![val.min])));
+        }
+
+        let array = match stats {
+            data_types::Statistics::I64(val) => Arc::new(Int64Array::from(vec![val.min])) as _,
+            data_types::Statistics::U64(val) => Arc::new(UInt64Array::from(vec![val.min])) as _,
+            data_types::Statistics::F64(val) => Arc::new(Float64Array::from(vec![val.min])) as _,
+            data_types::Statistics::Bool(val) => Arc::new(BooleanArray::from(vec![val.min])) as _,
+            data_types::Statistics::String(val) => {
+                Arc::new(StringArray::from(vec![val.min.as_deref()])) as _
+            }
+        };
+
+        Some(array)
+    }
+
+    fn max_values(
+        &self,
+        column: &datafusion::logical_plan::Column,
+    ) -> Option<arrow::array::ArrayRef> {
+        let col = self.summary.column(&column.name)?;
+        let stats = &col.stats;
+
+        // special handling for timestamps
+        if col.influxdb_type == Some(InfluxDbType::Timestamp) {
+            let val = stats.as_i64()?;
+            return Some(Arc::new(TimestampNanosecondArray::from(vec![val.max])));
+        }
+
+        let array = match stats {
+            data_types::Statistics::I64(val) => Arc::new(Int64Array::from(vec![val.max])) as _,
+            data_types::Statistics::U64(val) => Arc::new(UInt64Array::from(vec![val.max])) as _,
+            data_types::Statistics::F64(val) => Arc::new(Float64Array::from(vec![val.max])) as _,
+            data_types::Statistics::Bool(val) => Arc::new(BooleanArray::from(vec![val.max])) as _,
+            data_types::Statistics::String(val) => {
+                Arc::new(StringArray::from(vec![val.max.as_deref()])) as _
+            }
+        };
+
+        Some(array)
+    }
+
+    fn num_containers(&self) -> usize {
+        // the summary represents a single virtual container
+        1
+    }
+
+    fn null_counts(
+        &self,
+        column: &datafusion::logical_plan::Column,
+    ) -> Option<arrow::array::ArrayRef> {
+        let null_count = self.summary.column(&column.name)?.stats.null_count();
+
+        Some(Arc::new(UInt64Array::from(vec![null_count])))
     }
 }
 
@@ -245,10 +374,6 @@ impl fmt::Display for Predicate {
             write!(f, " field_columns: {{{}}}", iter_to_str(field_columns))?;
         }
 
-        if let Some(partition_key) = &self.partition_key {
-            write!(f, " partition_key: '{}'", partition_key)?;
-        }
-
         if let Some(range) = &self.range {
             // TODO: could be nice to show this as actual timestamps (not just numbers)?
             write!(f, " range: [{} - {}]", range.start(), range.end())?;
@@ -268,7 +393,7 @@ impl fmt::Display for Predicate {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// The result of evaluating a predicate on a set of rows
 pub enum PredicateMatch {
     /// There is at least one row that matches the predicate that has
@@ -353,16 +478,6 @@ impl Predicate {
             .collect::<BTreeSet<_>>();
 
         self.field_columns = Some(column_names);
-        self
-    }
-
-    /// Set the partition key restriction
-    pub fn with_partition_key(mut self, partition_key: impl Into<String>) -> Self {
-        assert!(
-            self.partition_key.is_none(),
-            "multiple partition key predicates not suported"
-        );
-        self.partition_key = Some(partition_key.into());
         self
     }
 
@@ -493,7 +608,11 @@ impl From<ValueExpr> for Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::DataType as ArrowDataType;
+    use data_types::{ColumnSummary, InfluxDbType, StatValues, MAX_NANO_TIME, MIN_NANO_TIME};
     use datafusion::logical_plan::{col, lit};
+    use schema::builder::SchemaBuilder;
+    use test_helpers::maybe_start_logging;
 
     #[test]
     fn test_default_predicate_is_empty() {
@@ -621,10 +740,12 @@ mod tests {
         let p = Predicate::new()
             .with_range(1, 100)
             .with_expr(col("foo").eq(lit(42)))
-            .with_field_columns(vec!["f1", "f2"])
-            .with_partition_key("the_key");
+            .with_field_columns(vec!["f1", "f2"]);
 
-        assert_eq!(p.to_string(), "Predicate field_columns: {f1, f2} partition_key: 'the_key' range: [1 - 100] exprs: [#foo = Int32(42)]");
+        assert_eq!(
+            p.to_string(),
+            "Predicate field_columns: {f1, f2} range: [1 - 100] exprs: [#foo = Int32(42)]"
+        );
     }
 
     #[test]
@@ -654,7 +775,7 @@ mod tests {
     #[test]
     fn test_clear_timestamp_if_max_range_out_of_range_high() {
         let p = Predicate::new()
-            .with_range(0, MAX_NANO_TIME)
+            .with_range(0, MAX_NANO_TIME + 1)
             .with_expr(col("foo").eq(lit(42)));
 
         let expected = p.clone();
@@ -666,11 +787,166 @@ mod tests {
     #[test]
     fn test_clear_timestamp_if_max_range_in_range() {
         let p = Predicate::new()
-            .with_range(MIN_NANO_TIME, MAX_NANO_TIME)
+            .with_range(MIN_NANO_TIME, MAX_NANO_TIME + 1)
             .with_expr(col("foo").eq(lit(42)));
 
         let expected = Predicate::new().with_expr(col("foo").eq(lit(42)));
         // rewrite
         assert_eq!(p.with_clear_timestamp_if_max_range(), expected);
+    }
+
+    #[test]
+    fn test_apply_to_table_summary() {
+        maybe_start_logging();
+
+        let p = Predicate::new()
+            .with_range(100, 200)
+            .with_expr(col("foo").eq(lit(42i64)))
+            .with_expr(col("bar").eq(lit(42i64)))
+            .with_expr(col(TIME_COLUMN_NAME).gt(lit_timestamp_nano(120i64)));
+
+        let schema = SchemaBuilder::new()
+            .field("foo", ArrowDataType::Int64)
+            .field("bar", ArrowDataType::Int64)
+            .timestamp()
+            .build()
+            .unwrap();
+
+        let summary = TableSummary {
+            columns: vec![ColumnSummary {
+                name: "foo".to_owned(),
+                influxdb_type: Some(InfluxDbType::Field),
+                stats: data_types::Statistics::I64(StatValues {
+                    min: Some(10),
+                    max: Some(20),
+                    null_count: Some(0),
+                    total_count: 1_000,
+                    distinct_count: None,
+                }),
+            }],
+        };
+        assert_eq!(
+            p.apply_to_table_summary(&summary, schema.as_arrow()),
+            PredicateMatch::Zero,
+        );
+
+        let summary = TableSummary {
+            columns: vec![ColumnSummary {
+                name: "foo".to_owned(),
+                influxdb_type: Some(InfluxDbType::Field),
+                stats: data_types::Statistics::I64(StatValues {
+                    min: Some(10),
+                    max: Some(50),
+                    null_count: Some(0),
+                    total_count: 1_000,
+                    distinct_count: None,
+                }),
+            }],
+        };
+        assert_eq!(
+            p.apply_to_table_summary(&summary, schema.as_arrow()),
+            PredicateMatch::Unknown,
+        );
+
+        let summary = TableSummary {
+            columns: vec![ColumnSummary {
+                name: TIME_COLUMN_NAME.to_owned(),
+                influxdb_type: Some(InfluxDbType::Timestamp),
+                stats: data_types::Statistics::I64(StatValues {
+                    min: Some(115),
+                    max: Some(115),
+                    null_count: Some(0),
+                    total_count: 1_000,
+                    distinct_count: None,
+                }),
+            }],
+        };
+        assert_eq!(
+            p.apply_to_table_summary(&summary, schema.as_arrow()),
+            PredicateMatch::Zero,
+        );
+
+        let summary = TableSummary {
+            columns: vec![ColumnSummary {
+                name: TIME_COLUMN_NAME.to_owned(),
+                influxdb_type: Some(InfluxDbType::Timestamp),
+                stats: data_types::Statistics::I64(StatValues {
+                    min: Some(300),
+                    max: Some(300),
+                    null_count: Some(0),
+                    total_count: 1_000,
+                    distinct_count: None,
+                }),
+            }],
+        };
+        assert_eq!(
+            p.apply_to_table_summary(&summary, schema.as_arrow()),
+            PredicateMatch::Zero,
+        );
+
+        let summary = TableSummary {
+            columns: vec![ColumnSummary {
+                name: TIME_COLUMN_NAME.to_owned(),
+                influxdb_type: Some(InfluxDbType::Timestamp),
+                stats: data_types::Statistics::I64(StatValues {
+                    min: Some(150),
+                    max: Some(300),
+                    null_count: Some(0),
+                    total_count: 1_000,
+                    distinct_count: None,
+                }),
+            }],
+        };
+        assert_eq!(
+            p.apply_to_table_summary(&summary, schema.as_arrow()),
+            PredicateMatch::Unknown,
+        )
+    }
+
+    /// Test that pruning works even when some expressions within the predicate cannot be evaluated by DataFusion
+    #[test]
+    fn test_apply_to_table_summary_partially_unsupported() {
+        maybe_start_logging();
+
+        let p = Predicate::new()
+            .with_range(100, 200)
+            .with_expr(col("foo").eq(lit(42i64)).not()); // NOT expressions are currently mostly unsupported by DataFusion
+
+        let schema = SchemaBuilder::new()
+            .field("foo", ArrowDataType::Int64)
+            .timestamp()
+            .build()
+            .unwrap();
+
+        let summary = TableSummary {
+            columns: vec![
+                ColumnSummary {
+                    name: TIME_COLUMN_NAME.to_owned(),
+                    influxdb_type: Some(InfluxDbType::Timestamp),
+                    stats: data_types::Statistics::I64(StatValues {
+                        min: Some(10),
+                        max: Some(20),
+                        null_count: Some(0),
+                        total_count: 1_000,
+                        distinct_count: None,
+                    }),
+                },
+                ColumnSummary {
+                    name: "foo".to_owned(),
+                    influxdb_type: Some(InfluxDbType::Field),
+                    stats: data_types::Statistics::I64(StatValues {
+                        min: Some(10),
+                        max: Some(20),
+                        null_count: Some(0),
+                        total_count: 1_000,
+                        distinct_count: None,
+                    }),
+                },
+            ],
+        };
+        assert_eq!(
+            p.apply_to_table_summary(&summary, schema.as_arrow()),
+            PredicateMatch::Zero,
+        );
     }
 }

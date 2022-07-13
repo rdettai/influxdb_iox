@@ -11,10 +11,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use data_types::{
-    Column, ColumnType, KafkaPartition, KafkaTopic, KafkaTopicId, Namespace, NamespaceId,
-    ParquetFile, ParquetFileId, ParquetFileParams, Partition, PartitionId, PartitionInfo,
-    PartitionKey, ProcessedTombstone, QueryPool, QueryPoolId, SequenceNumber, Sequencer,
-    SequencerId, Table, TableId, TablePartition, Timestamp, Tombstone, TombstoneId,
+    Column, ColumnType, CompactionLevel, KafkaPartition, KafkaTopic, KafkaTopicId, Namespace,
+    NamespaceId, ParquetFile, ParquetFileId, ParquetFileParams, Partition, PartitionId,
+    PartitionInfo, PartitionKey, ProcessedTombstone, QueryPool, QueryPoolId, SequenceNumber,
+    Sequencer, SequencerId, Table, TableId, TablePartition, Timestamp, Tombstone, TombstoneId,
 };
 use iox_time::{SystemProvider, TimeProvider};
 use observability_deps::tracing::{debug, info, warn};
@@ -64,10 +64,10 @@ impl PostgresConnectionOptions {
     pub const DEFAULT_MAX_CONNS: u32 = 10;
 
     /// Default value for [`connect_timeout`](Self::connect_timeout).
-    pub const DEFAULT_CONNECT_TIMETOUT: Duration = Duration::from_secs(2);
+    pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// Default value for [`idle_timeout`](Self::idle_timeout).
-    pub const DEFAULT_IDLE_TIMETOUT: Duration = Duration::from_secs(10);
+    pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Default value for [`hotswap_poll_interval`](Self::hotswap_poll_interval).
     pub const DEFAULT_HOTSWAP_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -80,8 +80,8 @@ impl Default for PostgresConnectionOptions {
             schema_name: String::from(Self::DEFAULT_SCHEMA_NAME),
             dsn: String::new(),
             max_conns: Self::DEFAULT_MAX_CONNS,
-            connect_timeout: Self::DEFAULT_CONNECT_TIMETOUT,
-            idle_timeout: Self::DEFAULT_IDLE_TIMETOUT,
+            connect_timeout: Self::DEFAULT_CONNECT_TIMEOUT,
+            idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             hotswap_poll_interval: Self::DEFAULT_HOTSWAP_POLL_INTERVAL,
         }
     }
@@ -931,6 +931,21 @@ WHERE table_name.namespace_id = $1;
         Ok(rec)
     }
 
+    async fn list_by_table_id(&mut self, table_id: TableId) -> Result<Vec<Column>> {
+        let rec = sqlx::query_as::<_, Column>(
+            r#"
+SELECT * FROM column_name
+WHERE table_id = $1;
+            "#,
+        )
+        .bind(&table_id)
+        .fetch_all(&mut self.inner)
+        .await
+        .map_err(|e| Error::SqlxError { source: e })?;
+
+        Ok(rec)
+    }
+
     async fn list(&mut self) -> Result<Vec<Column>> {
         let rec = sqlx::query_as::<_, Column>("SELECT * FROM column_name;")
             .fetch_all(&mut self.inner)
@@ -1629,7 +1644,7 @@ WHERE parquet_file.sequencer_id = $1
         .map_err(|e| Error::SqlxError { source: e })
     }
 
-    async fn level_1(
+    async fn level_2(
         &mut self,
         table_partition: TablePartition,
         min_time: Timestamp,
@@ -1646,17 +1661,18 @@ FROM parquet_file
 WHERE parquet_file.sequencer_id = $1
   AND parquet_file.table_id = $2
   AND parquet_file.partition_id = $3
-  AND parquet_file.compaction_level = 1
+  AND parquet_file.compaction_level = $4
   AND parquet_file.to_delete IS NULL
-  AND ((parquet_file.min_time <= $4 AND parquet_file.max_time >= $4)
-      OR (parquet_file.min_time > $4 AND parquet_file.min_time <= $5));
+  AND ((parquet_file.min_time <= $5 AND parquet_file.max_time >= $5)
+      OR (parquet_file.min_time > $5 AND parquet_file.min_time <= $6));
         "#,
         )
         .bind(&table_partition.sequencer_id) // $1
         .bind(&table_partition.table_id) // $2
         .bind(&table_partition.partition_id) // $3
-        .bind(min_time) // $4
-        .bind(max_time) // $5
+        .bind(CompactionLevel::FileNonOverlapped) // $4
+        .bind(min_time) // $5
+        .bind(max_time) // $6
         .fetch_all(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })
@@ -1684,7 +1700,7 @@ WHERE parquet_file.partition_id = $1
         .map_err(|e| Error::SqlxError { source: e })
     }
 
-    async fn update_to_level_1(
+    async fn update_to_level_2(
         &mut self,
         parquet_file_ids: &[ParquetFileId],
     ) -> Result<Vec<ParquetFileId>> {
@@ -1694,12 +1710,13 @@ WHERE parquet_file.partition_id = $1
         let updated = sqlx::query(
             r#"
 UPDATE parquet_file
-SET compaction_level = 1
-WHERE id = ANY($1)
+SET compaction_level = $1
+WHERE id = ANY($2)
 RETURNING id;
         "#,
         )
-        .bind(&ids[..])
+        .bind(CompactionLevel::FileNonOverlapped) // $1
+        .bind(&ids[..]) // $2
         .fetch_all(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })?;

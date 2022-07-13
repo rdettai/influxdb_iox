@@ -9,6 +9,7 @@ use arrow::record_batch::RecordBatch;
 
 use datafusion::{
     catalog::catalog::CatalogProvider,
+    config::OPT_COALESCE_TARGET_BATCH_SIZE,
     execution::{
         context::{QueryPlanner, SessionState, TaskContext},
         runtime_env::RuntimeEnv,
@@ -177,11 +178,17 @@ impl fmt::Debug for IOxSessionConfig {
 }
 
 const BATCH_SIZE: usize = 1000;
+const COALESCE_BATCH_SIZE: usize = 500;
 
 impl IOxSessionConfig {
     pub(super) fn new(exec: DedicatedExecutor, runtime: Arc<RuntimeEnv>) -> Self {
         let session_config = SessionConfig::new()
             .with_batch_size(BATCH_SIZE)
+            // TODO add function in SessionCofig
+            .set_u64(
+                OPT_COALESCE_TARGET_BATCH_SIZE,
+                COALESCE_BATCH_SIZE.try_into().unwrap(),
+            )
             .create_default_catalog_and_schema(true)
             .with_information_schema(true)
             .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_SCHEMA);
@@ -459,10 +466,13 @@ impl IOxSessionContext {
 
     /// Executes `plan` and return the resulting FieldList on the query executor
     pub async fn to_field_list(&self, plan: FieldListPlan) -> Result<FieldList> {
-        let FieldListPlan { plans } = plan;
+        let FieldListPlan {
+            known_values,
+            extra_plans,
+        } = plan;
 
         // Run the plans in parallel
-        let handles = plans
+        let handles = extra_plans
             .into_iter()
             .map(|plan| {
                 let ctx = self.child_ctx("to_field_list");
@@ -485,6 +495,12 @@ impl IOxSessionContext {
 
         // collect them all up and combine them
         let mut results = Vec::new();
+
+        if !known_values.is_empty() {
+            let list = known_values.into_iter().map(|f| f.1).collect();
+            results.push(FieldList { fields: list })
+        }
+
         for join_handle in handles {
             let fieldlist = join_handle.await?;
 

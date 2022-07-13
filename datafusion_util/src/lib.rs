@@ -1,9 +1,9 @@
 #![deny(rustdoc::broken_intra_doc_links, rustdoc::bare_urls, rust_2018_idioms)]
 #![allow(clippy::clone_on_ref_ptr)]
 
+pub mod sender;
 pub mod watch;
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -18,16 +18,19 @@ use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MemTrackingMet
 use datafusion::physical_plan::{collect, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use datafusion::{
-    arrow::{datatypes::SchemaRef, error::Result as ArrowResult, record_batch::RecordBatch},
+    arrow::{
+        datatypes::{Field, Schema, SchemaRef},
+        error::Result as ArrowResult,
+        record_batch::RecordBatch,
+    },
     logical_plan::{col, lit, Expr},
     physical_plan::{RecordBatchStream, SendableRecordBatchStream},
     scalar::ScalarValue,
 };
-use futures::{Future, Stream, StreamExt};
-use pin_project::{pin_project, pinned_drop};
+use futures::{Stream, StreamExt};
 use tokio::sync::mpsc::{Receiver, UnboundedReceiver};
-use tokio::task::{JoinError, JoinHandle};
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
+use watch::WatchedTask;
 
 /// Traits to help creating DataFusion [`Expr`]s
 pub trait AsExpr {
@@ -185,7 +188,7 @@ pub struct AdapterStream<T> {
 
     /// Optional join handles of underlying tasks.
     #[allow(dead_code)]
-    join_handle: Option<Arc<AutoAbortJoinHandle<()>>>,
+    task: Arc<WatchedTask>,
 }
 
 impl AdapterStream<ReceiverStream<ArrowResult<RecordBatch>>> {
@@ -197,13 +200,13 @@ impl AdapterStream<ReceiverStream<ArrowResult<RecordBatch>>> {
     pub fn adapt(
         schema: SchemaRef,
         rx: Receiver<ArrowResult<RecordBatch>>,
-        join_handle: Option<Arc<AutoAbortJoinHandle<()>>>,
+        task: Arc<WatchedTask>,
     ) -> SendableRecordBatchStream {
         let inner = ReceiverStream::new(rx);
         Box::pin(Self {
             schema,
             inner,
-            join_handle,
+            task,
         })
     }
 }
@@ -217,13 +220,13 @@ impl AdapterStream<UnboundedReceiverStream<ArrowResult<RecordBatch>>> {
     pub fn adapt_unbounded(
         schema: SchemaRef,
         rx: UnboundedReceiver<ArrowResult<RecordBatch>>,
-        join_handle: Option<Arc<AutoAbortJoinHandle<()>>>,
+        task: Arc<WatchedTask>,
     ) -> SendableRecordBatchStream {
         let inner = UnboundedReceiverStream::new(rx);
         Box::pin(Self {
             schema,
             inner,
-            join_handle,
+            task,
         })
     }
 }
@@ -348,35 +351,35 @@ pub fn context_with_table(batch: RecordBatch) -> SessionContext {
     ctx
 }
 
-/// A [`JoinHandle`] that is aborted on drop.
-#[pin_project(PinnedDrop)]
-#[derive(Debug)]
-pub struct AutoAbortJoinHandle<T>(#[pin] JoinHandle<T>);
+/// Returns a new schema where all the fields are nullable
+pub fn nullable_schema(schema: SchemaRef) -> SchemaRef {
+    // they are all already nullable
+    if schema.fields().iter().all(|f| f.is_nullable()) {
+        schema
+    } else {
+        // make a new schema with all nullable fields
+        let new_fields = schema
+            .fields()
+            .iter()
+            .map(|f| {
+                // make a copy of the field, but allow it to be nullable
+                Field::new(f.name(), f.data_type().clone(), true)
+                    .with_metadata(f.metadata().cloned())
+            })
+            .collect();
 
-impl<T> AutoAbortJoinHandle<T> {
-    pub fn new(handle: JoinHandle<T>) -> Self {
-        Self(handle)
-    }
-}
-
-#[pinned_drop]
-impl<T> PinnedDrop for AutoAbortJoinHandle<T> {
-    fn drop(self: Pin<&mut Self>) {
-        self.0.abort();
-    }
-}
-
-impl<T> Future for AutoAbortJoinHandle<T> {
-    type Output = Result<T, JoinError>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        this.0.poll(cx)
+        Arc::new(Schema::new_with_metadata(
+            new_fields,
+            schema.metadata().clone(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use datafusion::arrow::datatypes::DataType;
+    use schema::builder::SchemaBuilder;
+
     use super::*;
 
     #[test]
@@ -389,5 +392,52 @@ mod tests {
         let actual_string = format!("{:?}", ts_predicate_expr);
 
         assert_eq!(actual_string, expected_string);
+    }
+
+    #[test]
+    fn test_nullable_schema_nullable() {
+        // schema is all nullable
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("foo", DataType::Int32, true),
+            Field::new("bar", DataType::Utf8, true),
+        ]));
+
+        assert_eq!(schema, nullable_schema(schema.clone()))
+    }
+
+    #[test]
+    fn test_nullable_schema_non_nullable() {
+        // schema has one nullable column
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("foo", DataType::Int32, false),
+            Field::new("bar", DataType::Utf8, true),
+        ]));
+
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new("foo", DataType::Int32, true),
+            Field::new("bar", DataType::Utf8, true),
+        ]));
+
+        assert_eq!(expected_schema, nullable_schema(schema))
+    }
+
+    #[tokio::test]
+    async fn test_adapter_stream_panic_handling() {
+        let schema = SchemaBuilder::new().timestamp().build().unwrap().as_arrow();
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let tx_captured = tx.clone();
+        let fut = async move {
+            let _tx = tx_captured;
+            if true {
+                panic!("epic fail");
+            }
+
+            Ok(())
+        };
+        let join_handle = WatchedTask::new(fut, vec![tx], "test");
+        let stream = AdapterStream::adapt(schema, rx, join_handle);
+        datafusion::physical_plan::common::collect(stream)
+            .await
+            .unwrap_err();
     }
 }

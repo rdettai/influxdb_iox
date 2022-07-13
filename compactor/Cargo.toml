@@ -5,7 +5,7 @@ authors = ["Luke Bond <luke.n.bond@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-arrow = { version = "16.0.0", features = ["prettyprint"] }
+arrow = { version = "17.0.0", features = ["prettyprint"] }
 async-trait = "0.1.56"
 backoff = { path = "../backoff" }
 bytes = "1.0"
@@ -14,7 +14,7 @@ datafusion = { path = "../datafusion" }
 futures = "0.3"
 iox_catalog = { path = "../iox_catalog" }
 metric = { path = "../metric" }
-object_store = "0.0.1"
+object_store = "0.3.0"
 observability_deps = { path = "../observability_deps" }
 parquet_file = { path = "../parquet_file" }
 predicate = { path = "../predicate" }

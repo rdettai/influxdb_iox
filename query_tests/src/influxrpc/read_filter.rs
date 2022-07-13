@@ -15,11 +15,16 @@ use crate::{
         TwoMeasurementsMultiSeriesWithDelete, TwoMeasurementsMultiSeriesWithDeleteAll,
     },
 };
-use datafusion::logical_plan::{col, lit, when, Expr};
+use datafusion::{
+    logical_plan::{col, lit},
+    scalar::ScalarValue,
+};
 use iox_query::frontend::influxrpc::InfluxRpcPlanner;
 use predicate::rpc_predicate::InfluxRpcPredicate;
 use predicate::Predicate;
 use test_helpers::assert_contains;
+
+use super::util::make_empty_tag_ref_expr;
 
 /// runs read_filter(predicate) and compares it to the expected
 /// output
@@ -171,26 +176,28 @@ async fn test_read_filter_data_tag_predicate() {
 
 #[tokio::test]
 async fn test_read_filter_invalid_predicate() {
+    let v = ScalarValue::Binary(Some(vec![]));
     let predicate = Predicate::new()
-        // region > 5 (region is a tag(string) column, so this predicate is invalid)
-        .with_expr(col("region").gt(lit(5i32)));
+        // region > <binary> (region is a tag(string) column, so this predicate is invalid)
+        .with_expr(col("region").gt(lit(v)));
     let predicate = InfluxRpcPredicate::new(None, predicate);
 
-    let expected_error = "Error during planning: 'Dictionary(Int32, Utf8) > Int32' can't be evaluated because there isn't a common type to coerce the types to";
+    let expected_error = "Dictionary(Int32, Utf8) > Binary' can't be evaluated because there isn't a common type to coerce the types to";
 
     run_read_filter_error_case(TwoMeasurements {}, predicate, expected_error).await;
 }
 
 #[tokio::test]
 async fn test_read_filter_invalid_predicate_case() {
+    let v = ScalarValue::Binary(Some(vec![]));
     let predicate = Predicate::new()
         // https://github.com/influxdata/influxdb_iox/issues/3635
         // model what happens when a field is treated like a tag
-        // CASE WHEN system" IS NULL THEN '' ELSE system END = 5;
-        .with_expr(make_empty_tag_ref_expr("system").eq(lit(5i32)));
+        // CASE WHEN system" IS NULL THEN '' ELSE system END = binary;
+        .with_expr(make_empty_tag_ref_expr("system").eq(lit(v)));
     let predicate = InfluxRpcPredicate::new(None, predicate);
 
-    let expected_error = "gRPC planner got error creating predicates: Error during planning: 'Utf8 = Int32' can't be evaluated because there isn't a common type to coerce the types to";
+    let expected_error = "gRPC planner got error creating predicates: Error during planning: 'Utf8 = Binary' can't be evaluated because there isn't a common type to coerce the types to";
 
     run_read_filter_error_case(TwoMeasurements {}, predicate, expected_error).await;
 }
@@ -796,14 +803,4 @@ async fn test_read_filter_on_field_multi_measurement() {
     ];
 
     run_read_filter_test_case(TwoMeasurementsManyFields {}, predicate, expected_results).await;
-}
-
-/// https://github.com/influxdata/influxdb_iox/issues/3635
-/// model what happens when a field is treated like a tag compared to ''
-///
-/// CASE WHEN system" IS NULL THEN '' ELSE system END
-fn make_empty_tag_ref_expr(tag_name: &str) -> Expr {
-    when(col(tag_name).is_null(), lit(""))
-        .otherwise(col(tag_name))
-        .unwrap()
 }
