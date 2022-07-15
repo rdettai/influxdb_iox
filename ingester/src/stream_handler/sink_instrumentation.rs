@@ -111,7 +111,7 @@ where
             )
             .recorder(attr.clone());
 
-            let op_apply = metrics.register_metric::<DurationHistogram>(
+        let op_apply = metrics.register_metric::<DurationHistogram>(
             "ingester_op_apply_duration",
             "The duration of time taken to process an operation read from the sequencer",
         );
