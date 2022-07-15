@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use data_types::KafkaPartition;
 use dml::DmlOperation;
 use iox_time::{SystemProvider, TimeProvider};
-use metric::{Attributes, DurationHistogram, Metric, U64Counter, U64Gauge};
+use metric::{Attributes, DurationHistogram, U64Counter, U64Gauge};
 use std::fmt::Debug;
 use trace::span::SpanRecorder;
 
@@ -111,7 +111,7 @@ where
             )
             .recorder(attr.clone());
 
-        let op_apply: Metric<DurationHistogram> = metrics.register_metric(
+            let op_apply = metrics.register_metric::<DurationHistogram>(
             "ingester_op_apply_duration",
             "The duration of time taken to process an operation read from the sequencer",
         );
