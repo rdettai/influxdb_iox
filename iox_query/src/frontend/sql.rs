@@ -21,4 +21,14 @@ impl SqlQueryPlanner {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         ctx.prepare_sql(query).await
     }
+
+    /// Plan a SQL statement against the catalogs registered with `ctx`, and return a
+    /// DataFusion physical execution plan that runs on the query executor.
+    pub async fn query_ast(
+        &self,
+        sql_statement: Box<datafusion::sql::sqlparser::ast::Statement>,
+        ctx: &IOxSessionContext,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        ctx.prepare_ast(sql_statement).await
+    }
 }

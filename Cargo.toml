@@ -13,6 +13,7 @@ members = [
     "dml",
     "executor",
     "generated_types",
+    "influxdb_influxql",
     "influxdb_iox",
     "influxdb_iox_client",
     "influxdb_line_protocol",

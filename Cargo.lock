@@ -2047,6 +2047,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "influxdb_influxql"
+version = "0.1.0"
+dependencies = [
+ "clap 3.2.12",
+ "serde_json",
+ "sqlparser",
+ "workspace-hack",
+]
+
+[[package]]
 name = "influxdb_iox"
 version = "0.1.0"
 dependencies = [
@@ -4968,6 +4978,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f531637a13132fa3d38c54d4cd8f115905e5dc3e72f6e77bd6160481f482e25d"
 dependencies = [
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6179,6 +6191,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.2",
  "smallvec",
+ "sqlparser",
  "sqlx",
  "sqlx-core",
  "sqlx-macros",
