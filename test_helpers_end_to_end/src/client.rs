@@ -5,7 +5,10 @@ use http::Response;
 use hyper::{Body, Client, Request};
 use influxdb_iox_client::{
     connection::Connection,
-    flight::generated_types::ReadInfo,
+    flight::generated_types::{
+        ReadInfo,
+        read_info::Query,
+    },
     write::generated_types::{DatabaseBatch, TableBatch, WriteRequest, WriteResponse},
     write_info::generated_types::{merge_responses, GetWriteInfoResponse, KafkaPartitionStatus},
 };
@@ -242,7 +245,7 @@ pub async fn try_run_query(
     let mut response = client
         .perform_query(ReadInfo {
             namespace_name: namespace,
-            sql_query: sql,
+            query: Some(Query::Sql(sql)),
         })
         .await?;
 
