@@ -7,7 +7,6 @@ use sqlparser::{
 };
 
 use clap::{ Parser , Subcommand};
-use sqlparser::ast::Query;
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -44,8 +43,8 @@ fn main() {
                 exit(1)
             }
             let stmt = match statements.pop() {
-                Some(Statement::Query(qry)) => {
-                    serde_json::to_string(&*qry)
+                Some(stmt) => {
+                    serde_json::to_string(&stmt)
                 },
                 _ => {
                     eprintln!("Unexpected statement");
@@ -57,8 +56,8 @@ fn main() {
         },
 
         Commands::Validate { json } => {
-            let qry: Query = serde_json::from_str(json.as_str()).expect("unable to parse JSON");
-            println!("{}", qry);
+            let stmt: Statement = serde_json::from_str(json.as_str()).expect("unable to parse JSON");
+            println!("{}", stmt);
         }
     };
 }

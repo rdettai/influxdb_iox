@@ -43,6 +43,17 @@ impl Planner {
             .await
     }
 
+    /// Plan a statement against the data in `database`, and return a
+    /// DataFusion physical execution plan.
+    pub async fn query_ast(&self, statement: datafusion::sql::sqlparser::ast::Statement) -> Result<Arc<dyn ExecutionPlan>> {
+        let planner = SqlQueryPlanner::new();
+        let ctx = self.ctx.child_ctx("query_ast");
+
+        self.ctx
+            .run(async move { planner.query_ast(statement, &ctx).await })
+            .await
+    }
+
     /// Creates a plan as described on
     /// [`InfluxRpcPlanner::table_names`], on a separate threadpool
     pub async fn table_names<D>(

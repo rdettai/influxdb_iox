@@ -26,9 +26,9 @@ impl SqlQueryPlanner {
     /// DataFusion physical execution plan that runs on the query executor.
     pub async fn query_ast(
         &self,
-        sql_statement: Box<datafusion::sql::sqlparser::ast::Statement>,
+        statement: datafusion::sql::sqlparser::ast::Statement,
         ctx: &IOxSessionContext,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        ctx.prepare_ast(sql_statement).await
+        ctx.prepare_ast(statement).await
     }
 }

@@ -27,12 +27,16 @@ use tokio::task::JoinHandle;
 use tonic::{Request, Response, Streaming};
 use trace::ctx::SpanContext;
 use tracker::InstrumentedAsyncOwnedSemaphorePermit;
+use datafusion::sql::sqlparser::ast::Statement;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Invalid ticket. Error: {:?}", source))]
     InvalidTicket { source: prost::DecodeError },
+
+    #[snafu(display("Invalid ticket. Missing query."))]
+    InvalidTicketMissingQuery,
 
     #[snafu(display("Invalid legacy ticket. Error: {:?}", source))]
     InvalidTicketLegacy { source: std::string::FromUtf8Error },
@@ -83,6 +87,7 @@ impl From<Error> for tonic::Status {
             Error::DatabaseNotFound { .. }
             | Error::InvalidTicket { .. }
             | Error::InvalidTicketLegacy { .. }
+            | Error::InvalidTicketMissingQuery
             | Error::InvalidQuery { .. }
             // TODO(edd): this should be `debug`. Keeping at info whilst IOx still in early development
             | Error::InvalidDatabaseName { .. } => info!(?err, msg),
@@ -102,6 +107,7 @@ impl Error {
         match &self {
             Self::InvalidTicket { .. } => Status::invalid_argument(self.to_string()),
             Self::InvalidTicketLegacy { .. } => Status::invalid_argument(self.to_string()),
+            Self::InvalidTicketMissingQuery => Status::invalid_argument(self.to_string()),
             Self::InvalidQuery { .. } => Status::invalid_argument(self.to_string()),
             Self::DatabaseNotFound { .. } => Status::not_found(self.to_string()),
             Self::Query { .. } => Status::internal(self.to_string()),
@@ -122,7 +128,13 @@ type TonicStream<T> = Pin<Box<dyn Stream<Item = Result<T, tonic::Status>> + Send
 /// Body of the `Ticket` serialized and sent to the do_get endpoint.
 struct ReadInfo {
     database_name: String,
-    sql_query: String,
+    query: QueryType,
+}
+
+#[derive(Deserialize, Debug)]
+enum QueryType {
+    Sql(String),
+    Statement(Box<Statement>),
 }
 
 impl ReadInfo {
@@ -139,10 +151,22 @@ impl ReadInfo {
         let read_info =
             proto::ReadInfo::decode(Bytes::from(ticket.to_vec())).context(InvalidTicketSnafu {})?;
 
-        Ok(Self {
-            database_name: read_info.namespace_name,
-            sql_query: read_info.sql_query,
-        })
+        match read_info.query.ok_or(Error::InvalidTicketMissingQuery)? {
+            proto::read_info::Query::Sql(sql) => {
+                Ok(Self {
+                    database_name: read_info.namespace_name,
+                    query: QueryType::Sql(sql),
+                })
+            }
+
+            proto::read_info::Query::AstStatement(ast) => {
+                let statement: datafusion::sql::sqlparser::ast::Statement = serde_json::from_str(ast.as_str()).context(InvalidQuerySnafu { query: ast.as_str() })?;
+                Ok(Self {
+                    database_name: read_info.namespace_name,
+                    query: QueryType::Statement(Box::new(statement)),
+                })
+            }
+        }
     }
 }
 
@@ -216,13 +240,26 @@ where
             })?;
 
         let ctx = db.new_query_context(span_ctx);
-        let query_completed_token =
-            db.record_query(&ctx, "sql", Box::new(read_info.sql_query.clone()));
+        let query_completed_token = match read_info.query {
+            QueryType::Sql(ref sql) => db.record_query(&ctx, "sql", Box::new(sql.clone())),
+            QueryType::Statement(ref statement) => db.record_query(&ctx, "ast", Box::new(statement.to_string())),
+        };
 
-        let physical_plan = Planner::new(&ctx)
-            .sql(&read_info.sql_query)
-            .await
-            .context(PlanningSnafu)?;
+        let physical_plan = match read_info.query {
+            QueryType::Sql(sql) => {
+                Planner::new(&ctx)
+                    .sql(sql.as_str())
+                    .await
+                    .context(PlanningSnafu)?
+            }
+
+            QueryType::Statement(statement) => {
+                Planner::new(&ctx)
+                    .query_ast(*statement)
+                    .await
+                    .context(PlanningSnafu)?
+            }
+        };
 
         let output = GetStream::new(
             ctx,

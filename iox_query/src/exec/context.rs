@@ -4,7 +4,6 @@
 use async_trait::async_trait;
 use executor::DedicatedExecutor;
 use std::{convert::TryInto, fmt, sync::Arc};
-use std::borrow::Borrow;
 
 use arrow::record_batch::RecordBatch;
 
@@ -23,9 +22,12 @@ use datafusion::{
         EmptyRecordBatchStream, ExecutionPlan, PhysicalPlanner, SendableRecordBatchStream,
     },
     prelude::*,
+    sql::{
+        planner::SqlToRel,
+        sqlparser::ast::Statement,
+    }
 };
 use futures::TryStreamExt;
-use datafusion::common::ScalarValue;
 use observability_deps::tracing::debug;
 use trace::{
     ctx::SpanContext,
@@ -53,7 +55,6 @@ use crate::plan::{
 
 // Reuse DataFusion error and Result types for this module
 pub use datafusion::error::{DataFusionError as Error, Result};
-use datafusion::sql::sqlparser::ast::{Ident, ObjectName, Query, SetExpr, TableFactor};
 use trace::span::Span;
 
 use super::{
@@ -299,60 +300,12 @@ impl IOxSessionContext {
         ctx.create_physical_plan(&logical_plan).await
     }
 
-    pub async fn prepare_ast(&self, sql_statement: Box<datafusion::sql::sqlparser::ast::Statement>) -> Result<Arc<dyn ExecutionPlan>> {
+    pub async fn prepare_ast(&self, statement: Statement) -> Result<Arc<dyn ExecutionPlan>> {
         let ctx = self.child_ctx("prepare_ast");
         let state = ctx.inner.state.read().clone();
 
-        use datafusion::sql::planner::SqlToRel;
         let query_planner = SqlToRel::new(&state);
-        let logical_plan = query_planner.sql_statement_to_plan(*sql_statement)?;
-        debug!(plan=%logical_plan.display_graphviz(), "logical plan");
-        ctx.create_physical_plan(&logical_plan).await
-    }
-
-    pub async fn prepare_sql2(&self, sql: &str) -> Result<Arc<dyn ExecutionPlan>> {
-        let ctx = self.child_ctx("prepare_sql");
-        use datafusion::sql::sqlparser::ast::{ Select, TableWithJoins, Expr, SelectItem, Value };
-        let table = TableWithJoins {
-            relation: TableFactor::Table {
-                name: ObjectName(vec![Ident::new("cpu")]),
-                alias: None,
-                args: None,
-                with_hints: vec![]
-            },
-            joins: vec![]
-        };
-
-        let sel = Select {
-            distinct: false,
-            top: None,
-            projection: vec![SelectItem::Wildcard],
-            into: None,
-            from: vec![table],
-            lateral_views: vec![],
-            selection: None,
-            group_by: vec![],
-            cluster_by: vec![],
-            distribute_by: vec![],
-            sort_by: vec![],
-            having: None,
-            qualify: None
-        };
-        let qry = Query {
-            with: None,
-            body: SetExpr::Select(Box::new(sel)),
-            order_by: vec![],
-            limit: Some(Expr::Value(Value::Number("10".to_string(), false))),
-            offset: None,
-            fetch: None,
-            lock: None
-        };
-
-        let state = ctx.inner.state.read().clone();
-        use datafusion::sql::planner::SqlToRel;
-        use hashbrown::HashMap;
-        let query_planner = SqlToRel::new(&state);
-        let logical_plan = query_planner.query_to_plan(qry, &mut HashMap::new())?;
+        let logical_plan = query_planner.sql_statement_to_plan(statement)?;
         debug!(plan=%logical_plan.display_graphviz(), "logical plan");
         ctx.create_physical_plan(&logical_plan).await
     }
