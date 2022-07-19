@@ -1,6 +1,6 @@
 use influxdb_iox_client::{
     connection::Connection,
-    flight::{self, generated_types::ReadInfo, generated_types::read_info},
+    flight::{self, generated_types::read_info, generated_types::ReadInfo},
     format::QueryOutputFormat,
 };
 use std::str::FromStr;
@@ -44,7 +44,7 @@ pub struct Config {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum QueryType {
     Sql,
-    Ast
+    Ast,
 }
 
 impl FromStr for QueryType {
@@ -75,13 +75,9 @@ pub async fn command(connection: Connection, config: Config) -> Result<()> {
         .perform_query(ReadInfo {
             namespace_name: namespace,
             query: Some(match query_type {
-                QueryType::Sql => {
-                    read_info::Query::Sql(query)
-                },
+                QueryType::Sql => read_info::Query::Sql(query),
 
-                QueryType::Ast => {
-                    read_info::Query::AstStatement(query)
-                },
+                QueryType::Ast => read_info::Query::AstStatement(query),
             }),
         })
         .await?;

@@ -1,12 +1,8 @@
+use sqlparser::{ast::Statement, dialect::GenericDialect, parser::Parser as SQLParser};
 use std::fmt::Debug;
 use std::process::exit;
-use sqlparser::{
-    ast::{ Statement },
-    dialect::{ GenericDialect },
-    parser::{ Parser as SQLParser },
-};
 
-use clap::{ Parser , Subcommand};
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 struct Cli {
@@ -28,7 +24,7 @@ enum Commands {
     Validate {
         #[clap(value_parser)]
         json: String,
-    }
+    },
 }
 
 fn main() {
@@ -37,26 +33,27 @@ fn main() {
     match args.command {
         Commands::Dump { sql } => {
             let dialect = &GenericDialect {};
-            let mut statements: Vec<Statement> = SQLParser::parse_sql(dialect, sql.as_str()).expect("failed to parse SLQ");
+            let mut statements: Vec<Statement> =
+                SQLParser::parse_sql(dialect, sql.as_str()).expect("failed to parse SLQ");
             if statements.len() != 1 {
                 eprintln!("Unexpected number of statements");
                 exit(1)
             }
             let stmt = match statements.pop() {
-                Some(stmt) => {
-                    serde_json::to_string(&stmt)
-                },
+                Some(stmt) => serde_json::to_string(&stmt),
                 _ => {
                     eprintln!("Unexpected statement");
                     exit(1)
                 }
-            }.expect("expected a single query");
+            }
+            .expect("expected a single query");
 
             println!("{}", stmt);
-        },
+        }
 
         Commands::Validate { json } => {
-            let stmt: Statement = serde_json::from_str(json.as_str()).expect("unable to parse JSON");
+            let stmt: Statement =
+                serde_json::from_str(json.as_str()).expect("unable to parse JSON");
             println!("{}", stmt);
         }
     };

@@ -5,10 +5,7 @@ use http::Response;
 use hyper::{Body, Client, Request};
 use influxdb_iox_client::{
     connection::Connection,
-    flight::generated_types::{
-        ReadInfo,
-        read_info::Query,
-    },
+    flight::generated_types::{read_info::Query, ReadInfo},
     write::generated_types::{DatabaseBatch, TableBatch, WriteRequest, WriteResponse},
     write_info::generated_types::{merge_responses, GetWriteInfoResponse, KafkaPartitionStatus},
 };

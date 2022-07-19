@@ -4,10 +4,10 @@ use arrow::{
     array::{ArrayRef, Int64Array, StringArray},
     record_batch::RecordBatch,
 };
+use generated_types::influxdata::iox::querier::v1::read_info;
 use observability_deps::tracing::{debug, info};
 use rustyline::{error::ReadlineError, Editor};
 use snafu::{ResultExt, Snafu};
-use generated_types::influxdata::iox::querier::v1::read_info;
 
 use super::repl_command::ReplCommand;
 

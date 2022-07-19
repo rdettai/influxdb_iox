@@ -9,11 +9,11 @@ use datafusion::{
     datasource::MemTable,
     prelude::{SessionConfig, SessionContext},
 };
+use generated_types::influxdata::iox::querier::v1::read_info;
 use influxdb_iox_client::{connection::Connection, flight::generated_types::ReadInfo};
 use observability_deps::tracing::{debug, info};
 use snafu::{ResultExt, Snafu};
 use std::{collections::HashMap, sync::Arc, time::Instant};
-use generated_types::influxdata::iox::querier::v1::read_info;
 
 #[derive(Debug, Snafu)]
 pub enum Error {

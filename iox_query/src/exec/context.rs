@@ -22,10 +22,7 @@ use datafusion::{
         EmptyRecordBatchStream, ExecutionPlan, PhysicalPlanner, SendableRecordBatchStream,
     },
     prelude::*,
-    sql::{
-        planner::SqlToRel,
-        sqlparser::ast::Statement,
-    }
+    sql::{planner::SqlToRel, sqlparser::ast::Statement},
 };
 use futures::TryStreamExt;
 use observability_deps::tracing::debug;

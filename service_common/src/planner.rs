@@ -45,7 +45,10 @@ impl Planner {
 
     /// Plan a statement against the data in `database`, and return a
     /// DataFusion physical execution plan.
-    pub async fn query_ast(&self, statement: datafusion::sql::sqlparser::ast::Statement) -> Result<Arc<dyn ExecutionPlan>> {
+    pub async fn query_ast(
+        &self,
+        statement: datafusion::sql::sqlparser::ast::Statement,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         let planner = SqlQueryPlanner::new();
         let ctx = self.ctx.child_ctx("query_ast");
 
