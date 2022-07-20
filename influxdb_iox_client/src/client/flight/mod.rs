@@ -81,6 +81,7 @@ pub enum Error {
 /// ```rust,no_run
 /// #[tokio::main]
 /// # async fn main() {
+/// use generated_types::influxdata::iox::querier::v1::read_info;
 /// use influxdb_iox_client::{
 ///     connection::Builder,
 ///     flight::{
@@ -99,7 +100,7 @@ pub enum Error {
 /// let mut query_results = client
 ///     .perform_query(ReadInfo {
 ///         namespace_name: "my_database".to_string(),
-///         sql_query: "select * from cpu_load".to_string(),
+///         query: Some(read_info::Query::Sql("select * from cpu_load".to_string())),
 ///     })
 ///     .await
 ///     .expect("query request should work");
