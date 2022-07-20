@@ -15,12 +15,12 @@ influxdb_iox_client = { path = "../influxdb_iox_client", features = ["flight", "
 influxdb_storage_client = { path = "../influxdb_storage_client" }
 influxrpc_parser = { path = "../influxrpc_parser"}
 iox_catalog = { path = "../iox_catalog" }
-iox_objectstore_garbage_collect = { path = "../iox_objectstore_garbage_collect" }
 ioxd_common = { path = "../ioxd_common"}
 ioxd_compactor = { path = "../ioxd_compactor"}
 ioxd_ingester = { path = "../ioxd_ingester"}
-ioxd_router = { path = "../ioxd_router"}
+ioxd_objectstore_garbage_collect = { path = "../ioxd_objectstore_garbage_collect" }
 ioxd_querier = { path = "../ioxd_querier"}
+ioxd_router = { path = "../ioxd_router"}
 ioxd_test = { path = "../ioxd_test"}
 metric = { path = "../metric" }
 object_store = "0.3.0"
@@ -37,7 +37,7 @@ trogging = { path = "../trogging", default-features = false, features = ["clap"]
 
 # Crates.io dependencies, in alphabetical order
 ansi_term = "0.12"
-arrow = { version = "17.0.0", features = ["prettyprint"] }
+arrow = { version = "18.0.0", features = ["prettyprint"] }
 backtrace = "0.3"
 bytes = "1.0"
 clap = { version = "3", features = ["derive", "env"] }
@@ -51,7 +51,7 @@ itertools = "0.10.1"
 libc = { version = "0.2" }
 num_cpus = "1.13.0"
 once_cell = { version = "1.13.0", features = ["parking_lot"] }
-rustyline = { version = "9.0", default-features = false }
+rustyline = { version = "10.0", default-features = false }
 serde_json = "1.0.82"
 snafu = "0.7"
 thiserror = "1.0.31"

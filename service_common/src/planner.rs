@@ -36,7 +36,7 @@ impl Planner {
     pub async fn sql(&self, query: impl Into<String> + Send) -> Result<Arc<dyn ExecutionPlan>> {
         let planner = SqlQueryPlanner::new();
         let query = query.into();
-        let ctx = self.ctx.child_ctx("sql");
+        let ctx = self.ctx.child_ctx("planner sql");
 
         self.ctx
             .run(async move { planner.query(&query, &ctx).await })
@@ -67,7 +67,7 @@ impl Planner {
     where
         D: QueryDatabase + 'static,
     {
-        let planner = InfluxRpcPlanner::default();
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner table_names"));
 
         self.ctx
             .run(async move {
@@ -89,8 +89,7 @@ impl Planner {
     where
         D: QueryDatabase + 'static,
     {
-        let planner =
-            InfluxRpcPlanner::new().with_execution_context(self.ctx.child_ctx("influxrpc_planner"));
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner tag_keys"));
 
         self.ctx
             .run(async move {
@@ -114,8 +113,7 @@ impl Planner {
         D: QueryDatabase + 'static,
     {
         let tag_name = tag_name.into();
-        let planner =
-            InfluxRpcPlanner::new().with_execution_context(self.ctx.child_ctx("influxrpc_planner"));
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner tag_values"));
 
         self.ctx
             .run(async move {
@@ -137,8 +135,7 @@ impl Planner {
     where
         D: QueryDatabase + 'static,
     {
-        let planner =
-            InfluxRpcPlanner::new().with_execution_context(self.ctx.child_ctx("influxrpc_planner"));
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner field_columns"));
 
         self.ctx
             .run(async move {
@@ -160,8 +157,7 @@ impl Planner {
     where
         D: QueryDatabase + 'static,
     {
-        let planner =
-            InfluxRpcPlanner::new().with_execution_context(self.ctx.child_ctx("influxrpc_planner"));
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner read_filter"));
 
         self.ctx
             .run(async move {
@@ -185,8 +181,7 @@ impl Planner {
     where
         D: QueryDatabase + 'static,
     {
-        let planner =
-            InfluxRpcPlanner::new().with_execution_context(self.ctx.child_ctx("influxrpc_planner"));
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner read_group"));
 
         self.ctx
             .run(async move {
@@ -211,7 +206,7 @@ impl Planner {
     where
         D: QueryDatabase + 'static,
     {
-        let planner = InfluxRpcPlanner::default();
+        let planner = InfluxRpcPlanner::new(self.ctx.child_ctx("planner read_window_aggregate"));
 
         self.ctx
             .run(async move {

@@ -196,7 +196,7 @@ impl From<DataFusionError> for Error {
 /// While the underlying storage is the same for columns in different
 /// categories with the same data type, columns of different
 /// categories are treated differently in the different query types.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct InfluxRpcPlanner {
     /// Optional executor currently only used to provide span context for tracing.
     ctx: IOxSessionContext,
@@ -204,13 +204,7 @@ pub struct InfluxRpcPlanner {
 
 impl InfluxRpcPlanner {
     /// Create a new instance of the RPC planner
-    pub fn new() -> Self {
-        Self {
-            ctx: IOxSessionContext::default(),
-        }
-    }
-
-    pub fn with_execution_context(self, ctx: IOxSessionContext) -> Self {
+    pub fn new(ctx: IOxSessionContext) -> Self {
         Self { ctx }
     }
 
@@ -225,7 +219,7 @@ impl InfluxRpcPlanner {
         database: &dyn QueryDatabase,
         rpc_predicate: InfluxRpcPredicate,
     ) -> Result<StringSetPlan> {
-        let _ctx = self.ctx.child_ctx("table_names planning");
+        let ctx = self.ctx.child_ctx("table_names planning");
         debug!(?rpc_predicate, "planning table_names");
 
         // Special case predicates that span the entire valid timestamp range
@@ -243,7 +237,7 @@ impl InfluxRpcPlanner {
             // Identify which chunks can answer from its metadata and then record its table,
             // and which chunks needs full plan and group them into their table
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             for chunk in cheap_chunk_first(chunks) {
@@ -363,7 +357,7 @@ impl InfluxRpcPlanner {
             }
 
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             for chunk in cheap_chunk_first(chunks) {
@@ -505,7 +499,7 @@ impl InfluxRpcPlanner {
             .context(CreatingPredicatesSnafu)?;
         for (table_name, predicate) in &table_predicates {
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             for chunk in cheap_chunk_first(chunks) {
@@ -691,7 +685,7 @@ impl InfluxRpcPlanner {
                 continue;
             }
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             let chunks = prune_chunks_metadata(chunks, predicate)?;
@@ -749,7 +743,7 @@ impl InfluxRpcPlanner {
         let mut ss_plans = Vec::with_capacity(table_predicates.len());
         for (table_name, predicate) in &table_predicates {
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             let chunks = prune_chunks_metadata(chunks, predicate)?;
@@ -812,7 +806,7 @@ impl InfluxRpcPlanner {
 
         for (table_name, predicate) in &table_predicates {
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             let chunks = prune_chunks_metadata(chunks, predicate)?;
@@ -883,7 +877,7 @@ impl InfluxRpcPlanner {
         let mut ss_plans = Vec::with_capacity(table_predicates.len());
         for (table_name, predicate) in &table_predicates {
             let chunks = database
-                .chunks(table_name, predicate)
+                .chunks(table_name, predicate, ctx.child_ctx("table chunks"))
                 .await
                 .context(GettingChunksSnafu { table_name })?;
             let chunks = prune_chunks_metadata(chunks, predicate)?;
@@ -1741,7 +1735,7 @@ mod tests {
     async fn test_predicate_rewrite_table_names() {
         run_test(|test_db, rpc_predicate| {
             async move {
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .table_names(test_db, rpc_predicate)
                     .await
                     .expect("creating plan");
@@ -1755,7 +1749,7 @@ mod tests {
     async fn test_predicate_rewrite_tag_keys() {
         run_test(|test_db, rpc_predicate| {
             async move {
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .tag_keys(test_db, rpc_predicate)
                     .await
                     .expect("creating plan");
@@ -1769,7 +1763,7 @@ mod tests {
     async fn test_predicate_rewrite_tag_values() {
         run_test(|test_db, rpc_predicate| {
             async move {
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .tag_values(test_db, "foo", rpc_predicate)
                     .await
                     .expect("creating plan");
@@ -1783,7 +1777,7 @@ mod tests {
     async fn test_predicate_rewrite_field_columns() {
         run_test(|test_db, rpc_predicate| {
             async move {
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .field_columns(test_db, rpc_predicate)
                     .await
                     .expect("creating plan");
@@ -1797,7 +1791,7 @@ mod tests {
     async fn test_predicate_rewrite_read_filter() {
         run_test(|test_db, rpc_predicate| {
             async move {
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .read_filter(test_db, rpc_predicate)
                     .await
                     .expect("creating plan");
@@ -1813,7 +1807,7 @@ mod tests {
             async move {
                 let agg = Aggregate::None;
                 let group_columns = &["foo"];
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .read_group(test_db, rpc_predicate, agg, group_columns)
                     .await
                     .expect("creating plan");
@@ -1830,7 +1824,7 @@ mod tests {
                 let agg = Aggregate::First;
                 let every = WindowDuration::from_months(1, false);
                 let offset = WindowDuration::from_months(1, false);
-                InfluxRpcPlanner::new()
+                InfluxRpcPlanner::new(IOxSessionContext::default())
                     .read_window_aggregate(test_db, rpc_predicate, agg, every, offset)
                     .await
                     .expect("creating plan");

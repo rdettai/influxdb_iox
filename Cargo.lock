@@ -96,16 +96,18 @@ checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
 
 [[package]]
 name = "arrow"
-version = "17.0.0"
+version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20f88d9bd22ae87d3d9faa19316b51ebb692a3b402f8a5e02916ad33c2435d2b"
+checksum = "a5f89d2bc04fa746ee395d20c4cbfa508e4cce5c00bae816f0fae434fcfb9853"
 dependencies = [
+ "ahash",
  "bitflags",
  "chrono",
  "comfy-table",
  "csv",
  "flatbuffers",
  "half 2.0.0",
+ "hashbrown",
  "hex",
  "indexmap",
  "lazy_static",
@@ -121,9 +123,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-flight"
-version = "17.0.0"
+version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d3a1f1484ac9d752de1362ad82440b0b978dc0cd1c19a7d8457a6d984a35deb"
+checksum = "30421ea30c815daae635003d8a40875922a627d55bc098a581ab215f7b7f5d35"
 dependencies = [
  "arrow",
  "base64",
@@ -1037,9 +1039,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-common"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ccfd8c0ee4cce11e45b3fd6f9d5e69e0cc62912aa6a0cb1bf4617b0eba5a12f"
+checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
  "generic-array 0.14.5",
  "typenum",
@@ -1107,22 +1109,22 @@ dependencies = [
 name = "datafusion"
 version = "0.1.0"
 dependencies = [
- "datafusion 9.0.0",
+ "datafusion 10.0.0",
  "datafusion-proto",
  "workspace-hack",
 ]
 
 [[package]]
 name = "datafusion"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "ahash",
  "arrow",
  "async-trait",
+ "bytes",
  "chrono",
  "datafusion-common",
- "datafusion-data-access",
  "datafusion-expr",
  "datafusion-optimizer",
  "datafusion-physical-expr",
@@ -1135,6 +1137,7 @@ dependencies = [
  "lazy_static",
  "log",
  "num_cpus",
+ "object_store",
  "ordered-float 3.0.0",
  "parking_lot 0.12.1",
  "parquet",
@@ -1152,32 +1155,20 @@ dependencies = [
 
 [[package]]
 name = "datafusion-common"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "arrow",
+ "object_store",
  "ordered-float 3.0.0",
  "parquet",
  "sqlparser",
 ]
 
 [[package]]
-name = "datafusion-data-access"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
-dependencies = [
- "async-trait",
- "chrono",
- "futures",
- "parking_lot 0.12.1",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "datafusion-expr"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1187,8 +1178,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-optimizer"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1202,8 +1193,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-physical-expr"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1226,21 +1217,21 @@ dependencies = [
 
 [[package]]
 name = "datafusion-proto"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "arrow",
- "datafusion 9.0.0",
+ "datafusion 10.0.0",
  "datafusion-common",
  "datafusion-expr",
  "prost",
- "tonic-build",
+ "prost-build",
 ]
 
 [[package]]
 name = "datafusion-row"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -1250,8 +1241,8 @@ dependencies = [
 
 [[package]]
 name = "datafusion-sql"
-version = "9.0.0"
-source = "git+https://github.com/apache/arrow-datafusion.git?rev=85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c#85ca8be669dc1fbba4b2eefbf99fc2ed1546cc0c"
+version = "10.0.0"
+source = "git+https://github.com/apache/arrow-datafusion.git?rev=9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8#9aa38c3c73856fe7e93d67b29cc2c9ce892db3f8"
 dependencies = [
  "ahash",
  "arrow",
@@ -1414,12 +1405,6 @@ checksum = "9852635589dc9f9ea1b6fe9f05b50ef208c85c834a562f0c6abb1c475736ec2b"
 dependencies = [
  "cfg-if",
 ]
-
-[[package]]
-name = "endian-type"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c34f04666d835ff5d62e058c3995147c06f42fe86ff053337632bca83e42702d"
 
 [[package]]
 name = "errno"
@@ -1794,9 +1779,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.12.2"
+version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "607c8a29735385251a339424dd462993c0fed8fa09d378f259377df08c126022"
+checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
 dependencies = [
  "ahash",
 ]
@@ -2081,12 +2066,12 @@ dependencies = [
  "influxdb_storage_client",
  "influxrpc_parser",
  "iox_catalog",
- "iox_objectstore_garbage_collect",
  "iox_query",
  "iox_time",
  "ioxd_common",
  "ioxd_compactor",
  "ioxd_ingester",
+ "ioxd_objectstore_garbage_collect",
  "ioxd_querier",
  "ioxd_router",
  "ioxd_test",
@@ -2345,7 +2330,6 @@ dependencies = [
  "snafu",
  "tempfile",
  "tokio",
- "trogging",
  "uuid 1.1.2",
 ]
 
@@ -2496,6 +2480,22 @@ dependencies = [
  "trace",
  "workspace-hack",
  "write_buffer",
+]
+
+[[package]]
+name = "ioxd_objectstore_garbage_collect"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "hyper",
+ "iox_objectstore_garbage_collect",
+ "ioxd_common",
+ "metric",
+ "snafu",
+ "tokio",
+ "trace",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -3007,32 +3007,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "nibble_vec"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
-dependencies = [
- "smallvec",
-]
-
-[[package]]
 name = "nix"
-version = "0.23.1"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f866317acbd3a240710c63f065ffb1e4fd466259045ccb504130b7f668f35c6"
-dependencies = [
- "bitflags",
- "cc",
- "cfg-if",
- "libc",
- "memoffset",
-]
-
-[[package]]
-name = "nix"
-version = "0.24.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f17df307904acd05aa8e32e97bb20f2a0df1728bbc2d771ae8f9a90463441e9"
+checksum = "195cdbc1741b8134346d515b3a56a1c94b0912758009cfd53f99ea0f57b065fc"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -3395,9 +3373,9 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "17.0.0"
+version = "18.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "367d46126e60d229e9e47e3d793c622a18c0e60a749573b7936bf3b0701cb8a3"
+checksum = "65f61759af307fad711e7656c705218402a8a79b776c893c20fef96e8ffd2a7d"
 dependencies = [
  "arrow",
  "base64",
@@ -3406,6 +3384,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flate2",
+ "futures",
  "lz4",
  "num",
  "num-bigint",
@@ -3413,6 +3392,7 @@ dependencies = [
  "rand",
  "snap",
  "thrift",
+ "tokio",
  "zstd",
 ]
 
@@ -3651,7 +3631,7 @@ dependencies = [
  "inferno",
  "libc",
  "log",
- "nix 0.24.1",
+ "nix",
  "once_cell",
  "parking_lot 0.12.1",
  "prost",
@@ -3990,16 +3970,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bcdf212e9776fbcb2d23ab029360416bb1706b1aea2d1a5ba002727cbcab804"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "radix_trie"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c069c179fcdc6a2fe24d8d18305cf085fdbd4f922c041943e203685d6a1c58fd"
-dependencies = [
- "endian-type",
- "nibble_vec",
 ]
 
 [[package]]
@@ -4471,9 +4441,9 @@ checksum = "a0a5f7c728f5d284929a1cccb5bc19884422bfe6ef4d6c409da2c41838983fcf"
 
 [[package]]
 name = "rustyline"
-version = "9.1.2"
+version = "10.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db7826789c0e25614b03e5a54a0717a86f9ff6e6e5247f92b369472869320039"
+checksum = "1d1cd5ae51d3f7bf65d7969d579d502168ef578f289452bd8ccc91de28fda20e"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -4482,10 +4452,8 @@ dependencies = [
  "libc",
  "log",
  "memchr",
- "nix 0.23.1",
- "radix_trie",
+ "nix",
  "scopeguard",
- "smallvec",
  "unicode-segmentation",
  "unicode-width",
  "utf8parse",
@@ -5257,7 +5225,7 @@ dependencies = [
  "http",
  "hyper",
  "influxdb_iox_client",
- "nix 0.24.1",
+ "nix",
  "observability_deps",
  "once_cell",
  "parking_lot 0.12.1",
@@ -6170,6 +6138,7 @@ dependencies = [
  "log",
  "md-5 0.10.1",
  "memchr",
+ "nix",
  "nom",
  "num-integer",
  "num-traits",
@@ -6200,6 +6169,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
+ "tonic-build",
  "tower",
  "tower-http",
  "tracing",
