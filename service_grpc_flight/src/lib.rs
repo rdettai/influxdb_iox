@@ -125,6 +125,13 @@ impl Error {
 type TonicStream<T> = Pin<Box<dyn Stream<Item = Result<T, tonic::Status>> + Send + Sync + 'static>>;
 
 #[derive(Deserialize, Debug)]
+/// Body of the `Ticket` serialized and sent to the do_get endpoint as JSON.
+struct ReadInfoLegacy {
+    database_name: String,
+    sql_query: String,
+}
+
+#[derive(Deserialize, Debug)]
 /// Body of the `Ticket` serialized and sent to the do_get endpoint.
 struct ReadInfo {
     database_name: String,
@@ -141,10 +148,13 @@ impl ReadInfo {
     fn decode_json(ticket: &[u8]) -> Result<Self> {
         let json_str = String::from_utf8(ticket.to_vec()).context(InvalidTicketLegacySnafu {})?;
 
-        let read_info: ReadInfo =
+        let read_info: ReadInfoLegacy =
             serde_json::from_str(&json_str).context(InvalidQuerySnafu { query: &json_str })?;
 
-        Ok(read_info)
+        Ok(Self {
+            database_name: read_info.database_name,
+            query: QueryType::Sql(read_info.sql_query),
+        })
     }
 
     fn decode_protobuf(ticket: &[u8]) -> Result<Self> {
