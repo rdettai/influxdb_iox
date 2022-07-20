@@ -151,13 +151,13 @@ impl ReadInfo {
         let read_info =
             proto::ReadInfo::decode(Bytes::from(ticket.to_vec())).context(InvalidTicketSnafu {})?;
 
-        match read_info.query.ok_or(Error::InvalidTicketMissingQuery)? {
-            proto::read_info::Query::Sql(sql) => Ok(Self {
+        match read_info.query {
+            Some(proto::read_info::Query::Sql(sql)) => Ok(Self {
                 database_name: read_info.namespace_name,
                 query: QueryType::Sql(sql),
             }),
 
-            proto::read_info::Query::AstStatement(ast) => {
+            Some(proto::read_info::Query::AstStatement(ast)) => {
                 let statement: datafusion::sql::sqlparser::ast::Statement =
                     serde_json::from_str(ast.as_str()).context(InvalidQuerySnafu {
                         query: ast.as_str(),
@@ -167,6 +167,18 @@ impl ReadInfo {
                     query: QueryType::Statement(Box::new(statement)),
                 })
             }
+
+            // This case is currently to handle the fact that query-ingester sends
+            // IngesterQueryRequest to the do_get handler, which unconditionally decodes the request
+            // as a ReadInfo struct. It so happens that IngesterQueryRequest.table
+            // matches the same position as ReadInfo.namespace_name, allowing the
+            // end_to_end_cases::query_ingester test to pass.
+            // It is possible that ReadInfo.query could be the last value of the
+            // IngesterQueryRequest.columns field, which is not ideal.
+            None => Ok(Self {
+                database_name: read_info.namespace_name,
+                query: QueryType::Sql("".to_string()),
+            }),
         }
     }
 }
