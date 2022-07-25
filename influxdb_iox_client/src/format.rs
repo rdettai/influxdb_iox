@@ -36,7 +36,7 @@ pub enum Error {
     JsonUtf8(std::string::FromUtf8Error),
 
     /// Error writing line protocol
-    #[error("Error converting JSON output to UTF-8: {}", .0)]
+    #[error("Error writing output to LineProtocol: {}", .0)]
     LineProtocol(std::io::Error),
 }
 type Result<T, E = Error> = std::result::Result<T, E>;
