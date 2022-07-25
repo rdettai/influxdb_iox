@@ -20,8 +20,8 @@ use futures::{
     future::{BoxFuture, Shared},
     prelude::*,
 };
+use garbage_collector::GarbageCollector;
 use hyper::{Body, Request, Response};
-use iox_objectstore_garbage_collect::GarbageCollector;
 use ioxd_common::{
     http::error::{HttpApiError, HttpApiErrorCode, HttpApiErrorSource},
     rpc::RpcBuilderInput,
@@ -31,18 +31,24 @@ use ioxd_common::{
 };
 use metric::Registry;
 use snafu::prelude::*;
-use std::{sync::Arc, time::Duration};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 use tokio::{select, sync::broadcast, task::JoinError, time};
 use trace::TraceCollector;
 
-pub use iox_objectstore_garbage_collect::{Config, SubConfig};
+pub use garbage_collector::{Config, SubConfig};
 
 /// The object store garbage collection server
-#[derive(Debug)]
 pub struct Server {
     metric_registry: Arc<metric::Registry>,
     worker: SharedCloneError<(), JoinError>,
     shutdown_tx: broadcast::Sender<()>,
+}
+
+impl Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Server(GarbageCollector)")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Server {
@@ -144,13 +150,11 @@ impl HttpApiErrorSource for HttpNotFound {
 #[allow(missing_docs)]
 pub enum Error {
     #[snafu(display("Could not start the garbage collector"))]
-    StartGarbageCollector {
-        source: iox_objectstore_garbage_collect::Error,
-    },
+    StartGarbageCollector { source: garbage_collector::Error },
 
     #[snafu(display("Could not join the garbage collector"))]
     JoinGarbageCollector {
-        source: Arc<iox_objectstore_garbage_collect::Error>,
+        source: Arc<garbage_collector::Error>,
     },
 
     #[snafu(display("Could not join the garbage collector worker task"))]

@@ -26,7 +26,7 @@ use snafu::{ResultExt, Snafu};
 use std::{fmt::Debug, pin::Pin, sync::Arc, task::Poll};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Streaming};
-use trace::ctx::SpanContext;
+use trace::{ctx::SpanContext, span::SpanExt};
 use tracker::InstrumentedAsyncOwnedSemaphorePermit;
 
 #[allow(clippy::enum_variant_names)]
@@ -247,20 +247,22 @@ where
 
         let permit = self
             .server
-            .acquire_semaphore(
-                span_ctx
-                    .as_ref()
-                    .map(|span| span.child("query rate limit semaphore")),
-            )
+            .acquire_semaphore(span_ctx.child_span("query rate limit semaphore"))
             .await;
+        info!(
+            db_name=%read_info.database_name,
+            sql_query=%read_info.sql_query,
+            "flight do_get",
+        );
 
         let database =
             DatabaseName::new(&read_info.database_name).context(InvalidDatabaseNameSnafu)?;
 
-        let db =
-            self.server.db(&database).await.ok_or_else(|| {
-                tonic::Status::not_found(format!("Unknown namespace: {database}"))
-            })?;
+        let db = self
+            .server
+            .db(&database, span_ctx.child_span("get namespace"))
+            .await
+            .ok_or_else(|| tonic::Status::not_found(format!("Unknown namespace: {database}")))?;
 
         let ctx = db.new_query_context(span_ctx);
         let query_completed_token = match read_info.query {

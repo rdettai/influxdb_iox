@@ -10,6 +10,7 @@ use futures::{
 use iox_catalog::interface::Catalog;
 use iox_query::exec::Executor;
 use iox_time::TimeProvider;
+use metric::Attributes;
 use observability_deps::tracing::*;
 use parquet_file::storage::ParquetStorage;
 use std::sync::Arc;
@@ -234,6 +235,8 @@ impl CompactorConfig {
 /// next top partitions to compact.
 async fn run_compactor(compactor: Arc<Compactor>, shutdown: CancellationToken) {
     while !shutdown.is_cancelled() {
+        // Select partition candidates
+        let start_time = compactor.time_provider.now();
         let candidates = Backoff::new(&compactor.backoff_config)
             .retry_all_errors("partitions_to_compact", || async {
                 compactor
@@ -247,66 +250,65 @@ async fn run_compactor(compactor: Arc<Compactor>, shutdown: CancellationToken) {
             })
             .await
             .expect("retry forever");
+        if let Some(delta) = compactor
+            .time_provider
+            .now()
+            .checked_duration_since(start_time)
+        {
+            let duration = compactor
+                .candidate_selection_duration
+                .recorder(Attributes::from([]));
+            duration.record(delta);
+        }
+
+        // Add other compaction-needed info into selected partitions
+        let start_time = compactor.time_provider.now();
         let candidates = Backoff::new(&compactor.backoff_config)
             .retry_all_errors("partitions_to_compact", || async {
                 compactor.add_info_to_partitions(&candidates).await
             })
             .await
             .expect("retry forever");
+        if let Some(delta) = compactor
+            .time_provider
+            .now()
+            .checked_duration_since(start_time)
+        {
+            let duration = compactor
+                .partitions_extra_info_reading_duration
+                .recorder(Attributes::from([]));
+            duration.record(delta);
+        }
 
         let n_candidates = candidates.len();
         debug!(n_candidates, "found compaction candidates");
 
         // Serially compact all candidates
         // TODO: we will parallelize this when everything runs smoothly in serial
+        let start_time = compactor.time_provider.now();
         for c in candidates {
-            let compactor = Arc::clone(&compactor);
-            let compact_and_upgrade = compactor
-                .groups_to_compact_and_files_to_upgrade(
-                    c.candidate.partition_id,
-                    &c.namespace.name,
-                    &c.table.name,
-                )
-                .await;
+            let partition_id = c.candidate.partition_id;
+            debug!(?partition_id, "compaction starting");
+            let compaction_result = crate::compact_partition(&compactor, c).await;
 
-            match compact_and_upgrade {
+            match compaction_result {
                 Err(e) => {
-                    warn!(
-                        "groups file to compact and upgrade on partition {} failed with: {:?}",
-                        c.candidate.partition_id, e
-                    );
+                    warn!(?partition_id, "compaction failed: {:?}", e);
                 }
-                Ok(compact_and_upgrade) => {
-                    if compact_and_upgrade.compactable() {
-                        let res = compactor
-                            .compact_partition(
-                                &c.namespace,
-                                &c.table,
-                                &c.table_schema,
-                                c.candidate.partition_id,
-                                compact_and_upgrade,
-                            )
-                            .await;
-                        if let Err(e) = res {
-                            warn!(
-                                "compaction on partition {} failed with: {:?}",
-                                c.candidate.partition_id, e
-                            );
-                        }
-                        debug!(candidate=?c, "compaction complete");
-                    } else {
-                        // All candidates should be compactable (have files to compact and/or
-                        // upgrade).
-                        // Reaching here means we do not choose the right candidates and
-                        // it would be a waste of time to repeat this cycle
-                        warn!(
-                            "The candidate partition {} has no files to be either compacted or \
-                                upgraded",
-                            c.candidate.partition_id
-                        );
-                    }
+                Ok(_) => {
+                    debug!(?partition_id, "compaction complete");
                 }
             }
+        }
+        if let Some(delta) = compactor
+            .time_provider
+            .now()
+            .checked_duration_since(start_time)
+        {
+            let duration = compactor
+                .compaction_cycle_duration
+                .recorder(Attributes::from([]));
+            duration.record(delta);
         }
     }
 }

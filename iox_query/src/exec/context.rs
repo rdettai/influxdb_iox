@@ -28,7 +28,7 @@ use futures::TryStreamExt;
 use observability_deps::tracing::debug;
 use trace::{
     ctx::SpanContext,
-    span::{MetaValue, Span, SpanRecorder},
+    span::{MetaValue, Span, SpanExt, SpanRecorder},
 };
 
 use crate::exec::{
@@ -234,7 +234,7 @@ impl IOxSessionConfig {
             inner.register_catalog(DEFAULT_CATALOG, default_catalog);
         }
 
-        let maybe_span = self.span_ctx.map(|ctx| ctx.child("Query Execution"));
+        let maybe_span = self.span_ctx.child_span("Query Execution");
 
         IOxSessionContext::new(inner, Some(self.exec), SpanRecorder::new(maybe_span))
     }
@@ -252,7 +252,6 @@ impl IOxSessionConfig {
 ///
 /// An IOxSessionContext is created directly from an Executor, or from
 /// an IOxSessionConfig created by an Executor
-#[derive(Default)]
 pub struct IOxSessionContext {
     inner: SessionContext,
 
@@ -277,8 +276,24 @@ impl fmt::Debug for IOxSessionContext {
 }
 
 impl IOxSessionContext {
+    /// Constructor for testing.
+    ///
+    /// This is identical to [`Default::default`] but we do NOT implement [`Default`] to make the creation of untracked
+    /// contexts more explicit.
+    pub fn with_testing() -> Self {
+        Self {
+            inner: SessionContext::default(),
+            exec: None,
+            recorder: SpanRecorder::default(),
+        }
+    }
+
     /// Private constructor
-    fn new(inner: SessionContext, exec: Option<DedicatedExecutor>, recorder: SpanRecorder) -> Self {
+    pub(crate) fn new(
+        inner: SessionContext,
+        exec: Option<DedicatedExecutor>,
+        recorder: SpanRecorder,
+    ) -> Self {
         // attach span to DataFusion session
         {
             let mut state = inner.state.write();
@@ -630,6 +645,9 @@ impl IOxSessionContext {
 pub trait SessionContextIOxExt {
     /// Get child span of the current context.
     fn child_span(&self, name: &'static str) -> Option<Span>;
+
+    /// Get span context
+    fn span_ctx(&self) -> Option<SpanContext>;
 }
 
 impl SessionContextIOxExt for SessionState {
@@ -637,5 +655,11 @@ impl SessionContextIOxExt for SessionState {
         self.config
             .get_extension::<Option<Span>>()
             .and_then(|span| span.as_ref().as_ref().map(|span| span.child(name)))
+    }
+
+    fn span_ctx(&self) -> Option<SpanContext> {
+        self.config
+            .get_extension::<Option<Span>>()
+            .and_then(|span| span.as_ref().as_ref().map(|span| span.ctx.clone()))
     }
 }

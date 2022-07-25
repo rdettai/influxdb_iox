@@ -14,6 +14,7 @@ use data_types::{ParquetFileId, TombstoneId};
 use iox_catalog::interface::Catalog;
 use iox_time::TimeProvider;
 use std::{collections::HashMap, mem::size_of_val, sync::Arc, time::Duration};
+use trace::span::Span;
 
 use super::ram::RamSize;
 
@@ -25,7 +26,14 @@ pub const TTL_NOT_PROCESSED: Duration = Duration::from_secs(100);
 
 const CACHE_ID: &str = "processed_tombstones";
 
-type CacheT = Box<dyn Cache<K = (ParquetFileId, TombstoneId), V = bool, Extra = ()>>;
+type CacheT = Box<
+    dyn Cache<
+        K = (ParquetFileId, TombstoneId),
+        V = bool,
+        GetExtra = ((), Option<Span>),
+        PeekExtra = ((), Option<Span>),
+    >,
+>;
 
 /// Cache for processed tombstones.
 #[derive(Debug)]
@@ -98,8 +106,15 @@ impl ProcessedTombstonesCache {
     }
 
     /// Check if the specified tombstone is mark as "processed" for the given parquet file.
-    pub async fn exists(&self, parquet_file_id: ParquetFileId, tombstone_id: TombstoneId) -> bool {
-        self.cache.get((parquet_file_id, tombstone_id), ()).await
+    pub async fn exists(
+        &self,
+        parquet_file_id: ParquetFileId,
+        tombstone_id: TombstoneId,
+        span: Option<Span>,
+    ) -> bool {
+        self.cache
+            .get((parquet_file_id, tombstone_id), ((), span))
+            .await
     }
 }
 
@@ -164,10 +179,26 @@ mod tests {
             true,
         );
 
-        assert!(cache.exists(file1.parquet_file.id, ts1.tombstone.id).await);
-        assert!(!cache.exists(file1.parquet_file.id, ts2.tombstone.id).await);
-        assert!(!cache.exists(file2.parquet_file.id, ts1.tombstone.id).await);
-        assert!(!cache.exists(file2.parquet_file.id, ts2.tombstone.id).await);
+        assert!(
+            cache
+                .exists(file1.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
+        assert!(
+            !cache
+                .exists(file1.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
+        assert!(
+            !cache
+                .exists(file2.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
+        assert!(
+            !cache
+                .exists(file2.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
 
         assert_histogram_metric_count(&catalog.metric_registry, "processed_tombstone_exist", 4);
 
@@ -178,27 +209,71 @@ mod tests {
         catalog
             .mock_time_provider()
             .inc(TTL_NOT_PROCESSED - Duration::from_millis(1));
-        assert!(!cache.exists(file2.parquet_file.id, ts2.tombstone.id).await);
+        assert!(
+            !cache
+                .exists(file2.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
         assert_histogram_metric_count(&catalog.metric_registry, "processed_tombstone_exist", 4);
 
         catalog.mock_time_provider().inc(Duration::from_millis(1));
-        assert!(cache.exists(file2.parquet_file.id, ts2.tombstone.id).await);
+        assert!(
+            cache
+                .exists(file2.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
         assert_histogram_metric_count(&catalog.metric_registry, "processed_tombstone_exist", 5);
 
         // "true" results are cached forever
-        assert!(cache.exists(file1.parquet_file.id, ts1.tombstone.id).await);
+        assert!(
+            cache
+                .exists(file1.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
         assert_histogram_metric_count(&catalog.metric_registry, "processed_tombstone_exist", 5);
 
         // cache key has two dimensions
-        assert!(cache.exists(file1.parquet_file.id, ts1.tombstone.id).await);
-        assert!(!cache.exists(file1.parquet_file.id, ts2.tombstone.id).await);
-        assert!(!cache.exists(file2.parquet_file.id, ts1.tombstone.id).await);
-        assert!(cache.exists(file2.parquet_file.id, ts2.tombstone.id).await);
+        assert!(
+            cache
+                .exists(file1.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
+        assert!(
+            !cache
+                .exists(file1.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
+        assert!(
+            !cache
+                .exists(file2.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
+        assert!(
+            cache
+                .exists(file2.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
         ts1.mark_processed(&file2).await;
         catalog.mock_time_provider().inc(TTL_NOT_PROCESSED);
-        assert!(cache.exists(file1.parquet_file.id, ts1.tombstone.id).await);
-        assert!(!cache.exists(file1.parquet_file.id, ts2.tombstone.id).await);
-        assert!(cache.exists(file2.parquet_file.id, ts1.tombstone.id).await);
-        assert!(cache.exists(file2.parquet_file.id, ts2.tombstone.id).await);
+        assert!(
+            cache
+                .exists(file1.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
+        assert!(
+            !cache
+                .exists(file1.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
+        assert!(
+            cache
+                .exists(file2.parquet_file.id, ts1.tombstone.id, None)
+                .await
+        );
+        assert!(
+            cache
+                .exists(file2.parquet_file.id, ts2.tombstone.id, None)
+                .await
+        );
     }
 }

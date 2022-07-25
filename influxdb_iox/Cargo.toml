@@ -18,7 +18,7 @@ iox_catalog = { path = "../iox_catalog" }
 ioxd_common = { path = "../ioxd_common"}
 ioxd_compactor = { path = "../ioxd_compactor"}
 ioxd_ingester = { path = "../ioxd_ingester"}
-ioxd_objectstore_garbage_collect = { path = "../ioxd_objectstore_garbage_collect" }
+ioxd_garbage_collector = { path = "../ioxd_garbage_collector" }
 ioxd_querier = { path = "../ioxd_querier"}
 ioxd_router = { path = "../ioxd_router"}
 ioxd_test = { path = "../ioxd_test"}
@@ -39,7 +39,7 @@ trogging = { path = "../trogging", default-features = false, features = ["clap"]
 ansi_term = "0.12"
 arrow = { version = "18.0.0", features = ["prettyprint"] }
 backtrace = "0.3"
-bytes = "1.0"
+bytes = "1.2"
 clap = { version = "3", features = ["derive", "env"] }
 console-subscriber = { version = "0.1.6", optional = true, features = ["parking_lot"] }
 dotenv = "0.15.0"

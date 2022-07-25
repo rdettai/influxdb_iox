@@ -2,8 +2,8 @@
 
 use crate::cache::CatalogCache;
 use data_types::{
-    ChunkId, ChunkOrder, ColumnId, DeletePredicate, ParquetFile, ParquetFileId, PartitionId,
-    SequenceNumber, SequencerId, TableSummary, TimestampMinMax,
+    ChunkId, ChunkOrder, ColumnId, CompactionLevel, DeletePredicate, ParquetFile, ParquetFileId,
+    PartitionId, SequenceNumber, SequencerId, TableSummary, TimestampMinMax,
 };
 use iox_catalog::interface::Catalog;
 use parking_lot::RwLock;
@@ -14,6 +14,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+use trace::span::{Span, SpanRecorder};
 use uuid::Uuid;
 
 use self::util::create_basic_summary;
@@ -45,11 +46,11 @@ pub struct ChunkMeta {
     /// Partition ID.
     partition_id: PartitionId,
 
-    /// The minimum sequence number within this chunk.
-    min_sequence_number: SequenceNumber,
-
     /// The maximum sequence number within this chunk.
     max_sequence_number: SequenceNumber,
+
+    /// Compaction level of the parquet file of the chunk
+    compaction_level: CompactionLevel,
 }
 
 impl ChunkMeta {
@@ -78,14 +79,14 @@ impl ChunkMeta {
         self.partition_id
     }
 
-    /// The minimum sequence number within this chunk.
-    pub fn min_sequence_number(&self) -> SequenceNumber {
-        self.min_sequence_number
-    }
-
     /// The maximum sequence number within this chunk.
     pub fn max_sequence_number(&self) -> SequenceNumber {
         self.max_sequence_number
+    }
+
+    /// Compaction level of the parquet file of the chunk
+    pub fn compaction_level(&self) -> CompactionLevel {
+        self.compaction_level
     }
 }
 
@@ -233,7 +234,9 @@ impl QuerierChunk {
         catalog_cache: Arc<CatalogCache>,
         store: ParquetStorage,
         load_setting: QuerierChunkLoadSetting,
+        span: Option<Span>,
     ) -> Self {
+        let span_recorder = SpanRecorder::new(span);
         let schema = parquet_chunk.schema();
         let timestamp_min_max = parquet_chunk.timestamp_min_max();
 
@@ -245,7 +248,13 @@ impl QuerierChunk {
             }
             QuerierChunkLoadSetting::OnDemand => {
                 // depends on cache state
-                catalog_cache.read_buffer().peek(meta.parquet_file_id).await
+                catalog_cache
+                    .read_buffer()
+                    .peek(
+                        meta.parquet_file_id,
+                        span_recorder.child_span("cache PEEK read_buffer"),
+                    )
+                    .await
             }
             QuerierChunkLoadSetting::ReadBufferOnly => {
                 // force load
@@ -256,6 +265,7 @@ impl QuerierChunk {
                             Arc::clone(parquet_chunk.parquet_file()),
                             Arc::clone(&schema),
                             store.clone(),
+                            span_recorder.child_span("cache GET read_buffer"),
                         )
                         .await,
                 )
@@ -357,9 +367,15 @@ impl ChunkAdapter {
         &self,
         namespace_name: Arc<str>,
         parquet_file: Arc<ParquetFile>,
+        span: Option<Span>,
     ) -> Option<QuerierChunk> {
+        let span_recorder = SpanRecorder::new(span);
         let parts = self
-            .chunk_parts(namespace_name, Arc::clone(&parquet_file))
+            .chunk_parts(
+                namespace_name,
+                Arc::clone(&parquet_file),
+                span_recorder.child_span("chunk_parts"),
+            )
             .await?;
 
         let parquet_chunk = Arc::new(ParquetChunk::new(
@@ -381,6 +397,7 @@ impl ChunkAdapter {
                 Arc::clone(&self.catalog_cache),
                 self.store.clone(),
                 load_settings,
+                span_recorder.child_span("QuerierChunk::new"),
             )
             .await,
         )
@@ -390,18 +407,28 @@ impl ChunkAdapter {
         &self,
         namespace_name: Arc<str>,
         parquet_file: Arc<ParquetFile>,
+        span: Option<Span>,
     ) -> Option<ChunkParts> {
+        let span_recorder = SpanRecorder::new(span);
+
         // gather schema information
         let file_column_ids: HashSet<ColumnId> = parquet_file.column_set.iter().copied().collect();
         let table_name = self
             .catalog_cache
             .table()
-            .name(parquet_file.table_id)
+            .name(
+                parquet_file.table_id,
+                span_recorder.child_span("cache GET table name"),
+            )
             .await?;
         let namespace_schema = self
             .catalog_cache
             .namespace()
-            .schema(namespace_name, &[(&table_name, &file_column_ids)])
+            .schema(
+                namespace_name,
+                &[(&table_name, &file_column_ids)],
+                span_recorder.child_span("cache GET namespace schema"),
+            )
             .await?;
         let table_schema_catalog = namespace_schema.tables.get(table_name.as_ref())?;
         let column_id_lookup = table_schema_catalog.column_id_map();
@@ -433,7 +460,11 @@ impl ChunkAdapter {
         let partition_sort_key = self
             .catalog_cache
             .partition()
-            .sort_key(parquet_file.partition_id, &relevant_pk_columns)
+            .sort_key(
+                parquet_file.partition_id,
+                &relevant_pk_columns,
+                span_recorder.child_span("cache GET partition sort key"),
+            )
             .await;
         let partition_sort_key_ref = partition_sort_key
             .as_ref()
@@ -480,8 +511,8 @@ impl ChunkAdapter {
             sort_key: Some(sort_key),
             sequencer_id: parquet_file.sequencer_id,
             partition_id: parquet_file.partition_id,
-            min_sequence_number: parquet_file.min_sequence_number,
             max_sequence_number: parquet_file.max_sequence_number,
+            compaction_level: parquet_file.compaction_level,
         });
 
         Some(ChunkParts {
@@ -632,7 +663,7 @@ pub mod tests {
     async fn collect_read_filter(chunk: &dyn QueryChunk) -> Vec<RecordBatch> {
         chunk
             .read_filter(
-                IOxSessionContext::default(),
+                IOxSessionContext::with_testing(),
                 &Default::default(),
                 Selection::All,
             )
@@ -704,6 +735,7 @@ pub mod tests {
                 .new_chunk(
                     self.ns.namespace.name.clone().into(),
                     Arc::clone(&self.parquet_file),
+                    None,
                 )
                 .await
                 .unwrap()

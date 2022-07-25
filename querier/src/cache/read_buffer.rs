@@ -20,6 +20,7 @@ use read_buffer::{ChunkMetrics, RBChunk};
 use schema::Schema;
 use snafu::{ResultExt, Snafu};
 use std::{collections::HashMap, mem, sync::Arc};
+use trace::span::Span;
 
 const CACHE_ID: &str = "read_buffer";
 
@@ -30,7 +31,14 @@ struct ExtraFetchInfo {
     store: ParquetStorage,
 }
 
-type CacheT = Box<dyn Cache<K = ParquetFileId, V = Arc<RBChunk>, Extra = ExtraFetchInfo>>;
+type CacheT = Box<
+    dyn Cache<
+        K = ParquetFileId,
+        V = Arc<RBChunk>,
+        GetExtra = (ExtraFetchInfo, Option<Span>),
+        PeekExtra = ((), Option<Span>),
+    >,
+>;
 
 /// Cache for parquet file data decoded into read buffer chunks
 #[derive(Debug)]
@@ -120,23 +128,30 @@ impl ReadBufferCache {
         parquet_file: Arc<ParquetFile>,
         schema: Arc<Schema>,
         store: ParquetStorage,
+        span: Option<Span>,
     ) -> Arc<RBChunk> {
         self.cache
             .get(
                 parquet_file.id,
-                ExtraFetchInfo {
-                    parquet_file,
-                    schema,
-                    store,
-                },
+                (
+                    ExtraFetchInfo {
+                        parquet_file,
+                        schema,
+                        store,
+                    },
+                    span,
+                ),
             )
             .await
     }
 
     /// Get existing or "loading" read buffer chunk from cache.
-    #[allow(dead_code)]
-    pub async fn peek(&self, parquet_file_id: ParquetFileId) -> Option<Arc<RBChunk>> {
-        self.cache.peek(parquet_file_id).await
+    pub async fn peek(
+        &self,
+        parquet_file_id: ParquetFileId,
+        span: Option<Span>,
+    ) -> Option<Arc<RBChunk>> {
+        self.cache.peek(parquet_file_id, ((), span)).await
     }
 }
 
@@ -266,6 +281,7 @@ mod tests {
                 Arc::clone(&parquet_file),
                 Arc::clone(&schema),
                 storage.clone(),
+                None,
             )
             .await;
 
@@ -285,7 +301,7 @@ mod tests {
         assert_batches_eq!(expected, &rb_batches);
 
         // This should fetch from the cache
-        let _rb_again = cache.get(parquet_file, schema, storage).await;
+        let _rb_again = cache.get(parquet_file, schema, storage, None).await;
 
         let m: Metric<U64Counter> = catalog
             .metric_registry
@@ -356,6 +372,7 @@ mod tests {
                 Arc::clone(&parquet_files[0]),
                 Arc::clone(&schemas[0]),
                 storage.clone(),
+                None,
             )
             .await;
         catalog.mock_time_provider().inc(Duration::from_millis(1));
@@ -366,6 +383,7 @@ mod tests {
                 Arc::clone(&parquet_files[1]),
                 Arc::clone(&schemas[1]),
                 storage.clone(),
+                None,
             )
             .await;
         catalog.mock_time_provider().inc(Duration::from_millis(1));
@@ -376,6 +394,7 @@ mod tests {
                 Arc::clone(&parquet_files[0]),
                 Arc::clone(&schemas[0]),
                 storage.clone(),
+                None,
             )
             .await;
         catalog.mock_time_provider().inc(Duration::from_millis(1));
@@ -386,6 +405,7 @@ mod tests {
                 Arc::clone(&parquet_files[2]),
                 Arc::clone(&schemas[2]),
                 storage.clone(),
+                None,
             )
             .await;
         catalog.mock_time_provider().inc(Duration::from_millis(1));
@@ -396,6 +416,7 @@ mod tests {
                 Arc::clone(&parquet_files[1]),
                 Arc::clone(&schemas[1]),
                 storage.clone(),
+                None,
             )
             .await;
         catalog.mock_time_provider().inc(Duration::from_millis(1));
@@ -406,6 +427,7 @@ mod tests {
                 Arc::clone(&parquet_files[1]),
                 Arc::clone(&schemas[1]),
                 storage.clone(),
+                None,
             )
             .await;
         catalog.mock_time_provider().inc(Duration::from_millis(1));
@@ -416,6 +438,7 @@ mod tests {
                 Arc::clone(&parquet_files[2]),
                 Arc::clone(&schemas[2]),
                 storage.clone(),
+                None,
             )
             .await;
 
@@ -495,7 +518,7 @@ mod tests {
 
         let cache = make_cache(&catalog);
 
-        let _rb = cache.get(parquet_file, schema, storage.clone()).await;
+        let _rb = cache.get(parquet_file, schema, storage.clone(), None).await;
 
         let g: Metric<CumulativeGauge> = catalog
             .metric_registry
@@ -522,16 +545,17 @@ mod tests {
 
         let cache = make_cache(&catalog);
 
-        assert!(cache.peek(parquet_file.id).await.is_none());
+        assert!(cache.peek(parquet_file.id, None).await.is_none());
         cache
             .get(
                 Arc::clone(&parquet_file),
                 Arc::clone(&schema),
                 storage.clone(),
+                None,
             )
             .await;
 
-        let rb = cache.peek(parquet_file.id).await.unwrap();
+        let rb = cache.peek(parquet_file.id, None).await.unwrap();
 
         let rb_batches: Vec<RecordBatch> = rb
             .read_filter(Predicate::default(), Selection::All, vec![])

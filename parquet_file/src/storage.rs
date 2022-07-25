@@ -177,7 +177,7 @@ impl ParquetStorage {
         path: &ParquetFilePath,
     ) -> Result<SendableRecordBatchStream, ReadError> {
         let path = path.object_store_path();
-        trace!(path=?path, "fetching parquet data for filtered read");
+        debug!(path=?path, "fetching parquet data for filtered read");
 
         // Compute final (output) schema after selection
         let schema = select_schema(selection, &schema);
@@ -235,6 +235,8 @@ async fn download_and_scan_parquet(
     object_store: Arc<DynObjectStore>,
     tx: tokio::sync::mpsc::Sender<ArrowResult<RecordBatch>>,
 ) -> Result<(), ReadError> {
+    debug!(?path, "Start parquet download & scan");
+
     let read_stream = object_store.get(&path).await?;
 
     let data = match read_stream {
@@ -747,7 +749,6 @@ mod tests {
             table_name: "platanos".into(),
             partition_id: PartitionId::new(4),
             partition_key: "potato".into(),
-            min_sequence_number: SequenceNumber::new(10),
             max_sequence_number: SequenceNumber::new(11),
             compaction_level: CompactionLevel::FileNonOverlapped,
             sort_key: None,

@@ -14,6 +14,7 @@ use data_types::{NamespaceId, Table, TableId};
 use iox_catalog::interface::Catalog;
 use iox_time::TimeProvider;
 use std::{collections::HashMap, mem::size_of_val, sync::Arc, time::Duration};
+use trace::span::Span;
 
 use super::ram::RamSize;
 
@@ -22,7 +23,14 @@ pub const TTL_NON_EXISTING: Duration = Duration::from_secs(10);
 
 const CACHE_ID: &str = "table";
 
-type CacheT = Box<dyn Cache<K = TableId, V = Option<Arc<CachedTable>>, Extra = ()>>;
+type CacheT = Box<
+    dyn Cache<
+        K = TableId,
+        V = Option<Arc<CachedTable>>,
+        GetExtra = ((), Option<Span>),
+        PeekExtra = ((), Option<Span>),
+    >,
+>;
 
 /// Cache for table-related queries.
 #[derive(Debug)]
@@ -102,9 +110,9 @@ impl TableCache {
     /// Get the table name for the given table ID.
     ///
     /// This either uses a cached value or -- if required -- fetches the mapping from the catalog.
-    pub async fn name(&self, table_id: TableId) -> Option<Arc<str>> {
+    pub async fn name(&self, table_id: TableId, span: Option<Span>) -> Option<Arc<str>> {
         self.cache
-            .get(table_id, ())
+            .get(table_id, ((), span))
             .await
             .map(|t| Arc::clone(&t.name))
     }
@@ -113,8 +121,11 @@ impl TableCache {
     ///
     /// This either uses a cached value or -- if required -- fetches the mapping from the catalog.
     #[allow(dead_code)]
-    pub async fn namespace_id(&self, table_id: TableId) -> Option<NamespaceId> {
-        self.cache.get(table_id, ()).await.map(|t| t.namespace_id)
+    pub async fn namespace_id(&self, table_id: TableId, span: Option<Span>) -> Option<NamespaceId> {
+        self.cache
+            .get(table_id, ((), span))
+            .await
+            .map(|t| t.namespace_id)
     }
 }
 
@@ -165,22 +176,22 @@ mod tests {
             true,
         );
 
-        let name1_a = cache.name(t1.id).await.unwrap();
+        let name1_a = cache.name(t1.id, None).await.unwrap();
         assert_eq!(name1_a.as_ref(), t1.name.as_str());
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 1);
 
-        let name2_a = cache.name(t2.id).await.unwrap();
+        let name2_a = cache.name(t2.id, None).await.unwrap();
         assert_eq!(name2_a.as_ref(), t2.name.as_str());
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
 
-        let name1_b = cache.name(t1.id).await.unwrap();
+        let name1_b = cache.name(t1.id, None).await.unwrap();
         assert!(Arc::ptr_eq(&name1_a, &name1_b));
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
 
         // wait for "non-existing" TTL, this must not wipe the existing names from cache
-        let name1_c = cache.name(t1.id).await.unwrap();
+        let name1_c = cache.name(t1.id, None).await.unwrap();
         assert_eq!(name1_c.as_ref(), t1.name.as_str());
-        let name2_b = cache.name(t2.id).await.unwrap();
+        let name2_b = cache.name(t2.id, None).await.unwrap();
         assert_eq!(name2_b.as_ref(), t2.name.as_str());
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
     }
@@ -198,17 +209,17 @@ mod tests {
             true,
         );
 
-        let none = cache.name(TableId::new(i64::MAX)).await;
+        let none = cache.name(TableId::new(i64::MAX), None).await;
         assert_eq!(none, None);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 1);
 
-        let none = cache.name(TableId::new(i64::MAX)).await;
+        let none = cache.name(TableId::new(i64::MAX), None).await;
         assert_eq!(none, None);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 1);
 
         catalog.mock_time_provider().inc(TTL_NON_EXISTING);
 
-        let none = cache.name(TableId::new(i64::MAX)).await;
+        let none = cache.name(TableId::new(i64::MAX), None).await;
         assert_eq!(none, None);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
     }
@@ -233,22 +244,22 @@ mod tests {
             true,
         );
 
-        let id1_a = cache.namespace_id(t1.id).await.unwrap();
+        let id1_a = cache.namespace_id(t1.id, None).await.unwrap();
         assert_eq!(id1_a, t1.namespace_id);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 1);
 
-        let id2_a = cache.namespace_id(t2.id).await.unwrap();
+        let id2_a = cache.namespace_id(t2.id, None).await.unwrap();
         assert_eq!(id2_a, t2.namespace_id);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
 
-        let id1_b = cache.namespace_id(t1.id).await.unwrap();
+        let id1_b = cache.namespace_id(t1.id, None).await.unwrap();
         assert_eq!(id1_b, t1.namespace_id);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
 
         // wait for "non-existing" TTL, this must not wipe the existing IDs from cache
-        let id1_c = cache.namespace_id(t1.id).await.unwrap();
+        let id1_c = cache.namespace_id(t1.id, None).await.unwrap();
         assert_eq!(id1_c, t1.namespace_id);
-        let id2_b = cache.namespace_id(t2.id).await.unwrap();
+        let id2_b = cache.namespace_id(t2.id, None).await.unwrap();
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
         assert_eq!(id2_b, t2.namespace_id);
     }
@@ -266,18 +277,18 @@ mod tests {
             true,
         );
 
-        let none = cache.namespace_id(TableId::new(i64::MAX)).await;
+        let none = cache.namespace_id(TableId::new(i64::MAX), None).await;
         assert_eq!(none, None);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 1);
 
         // "non-existing" is cached
-        let none = cache.namespace_id(TableId::new(i64::MAX)).await;
+        let none = cache.namespace_id(TableId::new(i64::MAX), None).await;
         assert_eq!(none, None);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 1);
 
         // let "non-existing" TTL expire
         catalog.mock_time_provider().inc(TTL_NON_EXISTING);
-        let none = cache.namespace_id(TableId::new(i64::MAX)).await;
+        let none = cache.namespace_id(TableId::new(i64::MAX), None).await;
         assert_eq!(none, None);
         assert_histogram_metric_count(&catalog.metric_registry, "table_get_by_id", 2);
     }

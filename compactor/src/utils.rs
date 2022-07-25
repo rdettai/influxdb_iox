@@ -1,39 +1,14 @@
 //! Helpers of the Compactor
 
 use crate::query::QueryableParquetChunk;
-use data_types::{
-    ParquetFile, ParquetFileId, ParquetFileParams, PartitionId, TableSchema, Timestamp, Tombstone,
-    TombstoneId,
-};
-use datafusion::physical_plan::SendableRecordBatchStream;
+use data_types::{ParquetFile, ParquetFileId, TableSchema, Timestamp, Tombstone, TombstoneId};
 use observability_deps::tracing::*;
-use parquet_file::{
-    chunk::ParquetChunk,
-    metadata::{IoxMetadata, IoxParquetMetaData},
-    storage::ParquetStorage,
-};
+use parquet_file::{chunk::ParquetChunk, storage::ParquetStorage};
 use schema::{sort::SortKey, Schema};
 use std::{
     collections::{BTreeMap, HashSet},
     sync::Arc,
 };
-
-/// Wrapper of a group of parquet files and their tombstones that overlap in time and should be
-/// considered during compaction.
-#[derive(Debug)]
-pub struct GroupWithTombstones {
-    /// Each file with the set of tombstones relevant to it
-    pub(crate) parquet_files: Vec<ParquetFileWithTombstone>,
-    /// All tombstones relevant to any of the files in the group
-    pub(crate) tombstones: Vec<Tombstone>,
-}
-
-impl GroupWithTombstones {
-    /// Return all tombstone ids
-    pub fn tombstone_ids(&self) -> HashSet<TombstoneId> {
-        self.tombstones.iter().map(|t| t.id).collect()
-    }
-}
 
 /// Wrapper of group of parquet files with their min time and total size
 #[derive(Debug, Clone, PartialEq)]
@@ -171,65 +146,13 @@ impl ParquetFileWithTombstone {
             self.data.partition_id,
             Arc::new(parquet_chunk),
             &self.tombstones,
-            self.data.min_sequence_number,
             self.data.max_sequence_number,
             self.data.min_time,
             self.data.max_time,
             sort_key,
             partition_sort_key,
+            self.data.compaction_level,
         )
-    }
-}
-
-/// Struct holding output of a compacted stream
-pub struct CompactedData {
-    pub(crate) data: SendableRecordBatchStream,
-    pub(crate) meta: IoxMetadata,
-    pub(crate) tombstones: BTreeMap<TombstoneId, Tombstone>,
-}
-
-impl CompactedData {
-    /// Initialize compacted data
-    pub fn new(
-        data: SendableRecordBatchStream,
-        meta: IoxMetadata,
-        tombstones: BTreeMap<TombstoneId, Tombstone>,
-    ) -> Self {
-        Self {
-            data,
-            meta,
-            tombstones,
-        }
-    }
-}
-
-/// Information needed to update the catalog after compacting a group of files
-#[derive(Debug)]
-pub struct CatalogUpdate {
-    #[allow(dead_code)]
-    pub(crate) meta: IoxMetadata,
-    pub(crate) tombstones: BTreeMap<TombstoneId, Tombstone>,
-    pub(crate) parquet_file: ParquetFileParams,
-}
-
-impl CatalogUpdate {
-    /// Initialize with data received from a persist to object storage
-    pub fn new(
-        partition_id: PartitionId,
-        meta: IoxMetadata,
-        file_size: usize,
-        md: IoxParquetMetaData,
-        tombstones: BTreeMap<TombstoneId, Tombstone>,
-        table_schema: &TableSchema,
-    ) -> Self {
-        let parquet_file = meta.to_parquet_file(partition_id, file_size, &md, |name| {
-            table_schema.columns.get(name).expect("unknown column").id
-        });
-        Self {
-            meta,
-            tombstones,
-            parquet_file,
-        }
     }
 }
 
@@ -255,15 +178,19 @@ impl CatalogUpdate {
 ///     7 = 1 (min_time) + 6 (time range)
 ///     13 = 7 (previous time) + 6 (time range)
 ///     19 = 13 (previous time) + 6 (time range)
-#[allow(dead_code)] // This is temporarily not being used anywhere
-fn compute_split_time(
+pub(crate) fn compute_split_time(
     min_time: i64,
     max_time: i64,
-    total_size: i64,
-    max_desired_file_size: i64,
+    total_size: u64,
+    max_desired_file_size: u64,
 ) -> Vec<i64> {
     // Too small to split
     if total_size <= max_desired_file_size {
+        return vec![max_time];
+    }
+
+    // Same min and max time, nothing to split
+    if min_time == max_time {
         return vec![max_time];
     }
 
@@ -287,8 +214,8 @@ fn compute_split_time(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_compute_split_time() {
+    #[test]
+    fn test_compute_split_time() {
         let min_time = 1;
         let max_time = 11;
         let total_size = 100;
@@ -313,5 +240,25 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], 5); // = 1 (min_time) + 4
         assert_eq!(result[1], 9); // = 5 (previous split_time) + 4
+    }
+
+    #[test]
+    fn compute_split_time_when_min_time_equals_max() {
+        // Imagine a customer is backfilling a large amount of data and for some reason, all the
+        // times on the data are exactly the same. That means the min_time and max_time will be the
+        // same, but the total_size will be greater than the desired size.
+        // We will not split it becasue the split has to stick to non-overlapped time range
+
+        let min_time = 1;
+        let max_time = 1;
+
+        let total_size = 200;
+        let max_desired_file_size = 100;
+
+        let result = compute_split_time(min_time, max_time, total_size, max_desired_file_size);
+
+        // must return vector of one containing max_time
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], 1);
     }
 }

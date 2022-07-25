@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use trace::span::Span;
 
 use super::ram::RamSize;
 
@@ -39,7 +40,14 @@ pub const TTL_NON_EXISTING: Duration = Duration::from_nanos(1);
 
 const CACHE_ID: &str = "namespace";
 
-type CacheT = Box<dyn Cache<K = Arc<str>, V = Option<Arc<CachedNamespace>>, Extra = ()>>;
+type CacheT = Box<
+    dyn Cache<
+        K = Arc<str>,
+        V = Option<Arc<CachedNamespace>>,
+        GetExtra = ((), Option<Span>),
+        PeekExtra = ((), Option<Span>),
+    >,
+>;
 
 /// Cache for namespace-related attributes.
 #[derive(Debug)]
@@ -138,6 +146,7 @@ impl NamespaceCache {
         &self,
         name: Arc<str>,
         should_cover: &[(&str, &HashSet<ColumnId>)],
+        span: Option<Span>,
     ) -> Option<Arc<NamespaceSchema>> {
         self.backend.remove_if(&name, |cached_namespace| {
             if let Some(namespace) = cached_namespace.as_ref() {
@@ -157,7 +166,7 @@ impl NamespaceCache {
         });
 
         self.cache
-            .get(name, ())
+            .get(name, ((), span))
             .await
             .map(|n| Arc::clone(&n.schema))
     }
@@ -214,7 +223,7 @@ mod tests {
         );
 
         let schema1_a = cache
-            .schema(Arc::from(String::from("ns1")), &[])
+            .schema(Arc::from(String::from("ns1")), &[], None)
             .await
             .unwrap();
         let expected_schema_1 = NamespaceSchema {
@@ -279,7 +288,7 @@ mod tests {
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 1);
 
         let schema2 = cache
-            .schema(Arc::from(String::from("ns2")), &[])
+            .schema(Arc::from(String::from("ns2")), &[], None)
             .await
             .unwrap();
         let expected_schema_2 = NamespaceSchema {
@@ -304,7 +313,7 @@ mod tests {
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 2);
 
         let schema1_b = cache
-            .schema(Arc::from(String::from("ns1")), &[])
+            .schema(Arc::from(String::from("ns1")), &[], None)
             .await
             .unwrap();
         assert!(Arc::ptr_eq(&schema1_a, &schema1_b));
@@ -314,7 +323,7 @@ mod tests {
         catalog.mock_time_provider().inc(TTL_EXISTING);
 
         let schema1_c = cache
-            .schema(Arc::from(String::from("ns1")), &[])
+            .schema(Arc::from(String::from("ns1")), &[], None)
             .await
             .unwrap();
         assert_eq!(schema1_c.as_ref(), schema1_a.as_ref());
@@ -335,18 +344,24 @@ mod tests {
             true,
         );
 
-        let none = cache.schema(Arc::from(String::from("foo")), &[]).await;
+        let none = cache
+            .schema(Arc::from(String::from("foo")), &[], None)
+            .await;
         assert!(none.is_none());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 1);
 
-        let none = cache.schema(Arc::from(String::from("foo")), &[]).await;
+        let none = cache
+            .schema(Arc::from(String::from("foo")), &[], None)
+            .await;
         assert!(none.is_none());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 1);
 
         // cache timeout
         catalog.mock_time_provider().inc(TTL_NON_EXISTING);
 
-        let none = cache.schema(Arc::from(String::from("foo")), &[]).await;
+        let none = cache
+            .schema(Arc::from(String::from("foo")), &[], None)
+            .await;
         assert!(none.is_none());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 2);
     }
@@ -365,14 +380,14 @@ mod tests {
         );
 
         // ========== namespace unknown ==========
-        assert!(cache.schema(Arc::from("ns1"), &[]).await.is_none());
+        assert!(cache.schema(Arc::from("ns1"), &[], None).await.is_none());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 1);
 
-        assert!(cache.schema(Arc::from("ns1"), &[]).await.is_none());
+        assert!(cache.schema(Arc::from("ns1"), &[], None).await.is_none());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 1);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))], None)
             .await
             .is_none());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 2);
@@ -381,13 +396,13 @@ mod tests {
         let ns1 = catalog.create_namespace("ns1").await;
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))], None)
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 3);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))], None)
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 4);
@@ -396,13 +411,13 @@ mod tests {
         let t1 = ns1.create_table("t1").await;
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))], None)
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 5);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))], None)
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 5);
@@ -412,19 +427,27 @@ mod tests {
         let c2 = t1.create_column("c2", ColumnType::Bool).await;
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))])
+            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([]))], None)
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 5);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([c1.column.id]))])
+            .schema(
+                Arc::from("ns1"),
+                &[("t1", &HashSet::from([c1.column.id]))],
+                None
+            )
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 6);
 
         assert!(cache
-            .schema(Arc::from("ns1"), &[("t1", &HashSet::from([c2.column.id]))])
+            .schema(
+                Arc::from("ns1"),
+                &[("t1", &HashSet::from([c2.column.id]))],
+                None
+            )
             .await
             .is_some());
         assert_histogram_metric_count(&catalog.metric_registry, "namespace_get_by_name", 6);
