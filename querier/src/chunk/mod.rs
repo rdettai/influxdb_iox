@@ -144,6 +144,15 @@ impl ChunkStage {
             }
         }
     }
+
+    fn estimate_size(&self) -> usize {
+        match self {
+            Self::Parquet { parquet_chunk, .. } => {
+                parquet_chunk.parquet_file().file_size_bytes as usize
+            }
+            Self::ReadBuffer { rb_chunk, .. } => rb_chunk.size(),
+        }
+    }
 }
 
 impl From<Arc<ParquetChunk>> for ChunkStage {
@@ -310,6 +319,10 @@ impl QuerierChunk {
             partition_sort_key,
             ..self
         }
+    }
+
+    pub fn estimate_size(&self) -> usize {
+        self.stage.read().estimate_size()
     }
 }
 
@@ -484,12 +497,18 @@ impl ChunkAdapter {
             .iter()
             .map(|(_t, field)| field.name().as_str())
             .filter(|col| file_columns.contains(*col))
+            .map(|s| s.to_owned())
             .collect();
-        let schema = Arc::new(
-            table_schema
-                .select_by_names(&column_names)
-                .expect("Bug in schema projection"),
-        );
+        let schema = self
+            .catalog_cache
+            .projected_schema()
+            .get(
+                parquet_file.table_id,
+                Arc::new(table_schema),
+                column_names,
+                span_recorder.child_span("cache GET projected schema"),
+            )
+            .await;
 
         // calculate sort key
         let pk_cols = schema.primary_key();
