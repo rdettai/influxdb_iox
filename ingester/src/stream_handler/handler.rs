@@ -1,12 +1,14 @@
 use super::DmlSink;
 use crate::lifecycle::{LifecycleHandle, LifecycleHandleImpl};
-use data_types::{KafkaPartition, SequenceNumber};
+use backoff::Backoff;
+use data_types::{KafkaPartition, SequenceNumber, SequencerId};
 use dml::DmlOperation;
 use futures::{pin_mut, FutureExt, StreamExt};
+use iox_catalog::interface::Catalog;
 use iox_time::{SystemProvider, TimeProvider};
 use metric::{Attributes, DurationCounter, DurationGauge, U64Counter};
 use observability_deps::tracing::*;
-use std::{fmt::Debug, time::Duration};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use write_buffer::core::{WriteBufferErrorKind, WriteBufferStreamHandler};
 
@@ -60,14 +62,25 @@ pub struct SequencedStreamHandler<I, O, T = SystemProvider> {
     sink_apply_error_count: U64Counter,
     skipped_sequence_number_amount: U64Counter,
 
+    /// Reset count
+    sequencer_reset_count: U64Counter,
+
     /// Log context fields - otherwise unused.
     kafka_topic_name: String,
     kafka_partition: KafkaPartition,
 
     skip_to_oldest_available: bool,
+
+    /// Catalog to preserve some metrics accross restarts.
+    catalog: Arc<dyn Catalog>,
+    sequencer_id: SequencerId,
 }
 
-impl<I, O> SequencedStreamHandler<I, O> {
+impl<I, O> SequencedStreamHandler<I, O>
+where
+    I: Send + Sync,
+    O: Send + Sync,
+{
     /// Initialise a new [`SequencedStreamHandler`], consuming from `stream` and
     /// dispatching successfully decoded [`DmlOperation`] instances to `sink`.
     ///
@@ -75,15 +88,17 @@ impl<I, O> SequencedStreamHandler<I, O> {
     /// `stream` once [`SequencedStreamHandler::run()`] is called, and
     /// gracefully stops when `shutdown` is cancelled.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub async fn new(
         write_buffer_stream_handler: I,
         current_sequence_number: SequenceNumber,
         sink: O,
         lifecycle_handle: LifecycleHandleImpl,
         kafka_topic_name: String,
         kafka_partition: KafkaPartition,
+        sequencer_id: SequencerId,
         metrics: &metric::Registry,
         skip_to_oldest_available: bool,
+        catalog: Arc<dyn Catalog>,
     ) -> Self {
         // TTBR
         let time_to_be_readable = metrics.register_metric::<DurationGauge>(
@@ -135,7 +150,15 @@ impl<I, O> SequencedStreamHandler<I, O> {
             true,
         ));
 
-        Self {
+        // reset count
+        let sequencer_reset_count = metrics
+            .register_metric::<U64Counter>(
+                "sequencer_reset_count",
+                "How often a sequencer was already reset",
+            )
+            .recorder(metric_attrs(kafka_partition, &kafka_topic_name, None, true));
+
+        let this = Self {
             write_buffer_stream_handler,
             current_sequence_number,
             sink,
@@ -148,10 +171,17 @@ impl<I, O> SequencedStreamHandler<I, O> {
             seq_unknown_error_count,
             sink_apply_error_count,
             skipped_sequence_number_amount,
+            sequencer_reset_count,
             kafka_topic_name,
             kafka_partition,
             skip_to_oldest_available,
-        }
+            catalog,
+            sequencer_id,
+        };
+
+        this.update_reset_count(false).await;
+
+        this
     }
 
     /// Switch to the specified [`TimeProvider`] implementation.
@@ -170,10 +200,46 @@ impl<I, O> SequencedStreamHandler<I, O> {
             seq_unknown_error_count: self.seq_unknown_error_count,
             sink_apply_error_count: self.sink_apply_error_count,
             skipped_sequence_number_amount: self.skipped_sequence_number_amount,
+            sequencer_reset_count: self.sequencer_reset_count,
             kafka_topic_name: self.kafka_topic_name,
             kafka_partition: self.kafka_partition,
             skip_to_oldest_available: self.skip_to_oldest_available,
+            catalog: self.catalog,
+            sequencer_id: self.sequencer_id,
         }
+    }
+}
+
+impl<I, O, T> SequencedStreamHandler<I, O, T>
+where
+    I: Send + Sync,
+    O: Send + Sync,
+    T: Send + Sync,
+{
+    /// Update reset count metric.
+    async fn update_reset_count(&self, inc: bool) {
+        let reset_count = if inc {
+            Backoff::new(&Default::default())
+                .retry_all_errors("inc reset count", || async {
+                    let mut repos = self.catalog.repositories().await;
+                    repos.sequencers().inc_reset_count(self.sequencer_id).await
+                })
+                .await
+                .expect("retry forever")
+        } else {
+            Backoff::new(&Default::default())
+                .retry_all_errors("get reset count", || async {
+                    let mut repos = self.catalog.repositories().await;
+                    repos.sequencers().get_reset_count(self.sequencer_id).await
+                })
+                .await
+                .expect("retry forever")
+        };
+
+        let reset_count = reset_count.expect("sequence exists in catalog");
+        let old = self.sequencer_reset_count.fetch();
+        self.sequencer_reset_count
+            .inc((reset_count as u64).saturating_sub(old));
     }
 }
 
@@ -245,6 +311,14 @@ where
                     // once and getting the next operation again.
                     // Keep the current sequence number to compare with the sequence number
                     if self.skip_to_oldest_available && sequence_number_before_reset.is_none() {
+                        warn!(
+                            error=%e,
+                            kafka_topic=%self.kafka_topic_name,
+                            kafka_partition=%self.kafka_partition,
+                            potential_data_loss=true,
+                            "Reset stream"
+                        );
+                        self.update_reset_count(true).await;
                         sequence_number_before_reset = Some(self.current_sequence_number);
                         self.write_buffer_stream_handler.reset_to_earliest();
                         stream = self.write_buffer_stream_handler.stream().await;
@@ -440,6 +514,7 @@ mod tests {
     use data_types::{DeletePredicate, Sequence, TimestampRange};
     use dml::{DmlDelete, DmlMeta, DmlWrite};
     use futures::stream::{self, BoxStream};
+    use iox_catalog::mem::MemCatalog;
     use iox_time::{SystemProvider, Time};
     use metric::Metric;
     use mutable_batch_lp::lines_to_batches;
@@ -451,8 +526,8 @@ mod tests {
     use write_buffer::core::WriteBufferError;
 
     static TEST_TIME: Lazy<Time> = Lazy::new(|| SystemProvider::default().now());
-    static TEST_KAFKA_PARTITION: Lazy<KafkaPartition> = Lazy::new(|| KafkaPartition::new(42));
-    static TEST_KAFKA_TOPIC: &str = "kafka_topic_name";
+    const TEST_KAFKA_PARTITION: KafkaPartition = KafkaPartition::new(42);
+    const TEST_KAFKA_TOPIC: &str = "kafka_topic_name";
 
     // Return a DmlWrite with the given namespace and a single table.
     fn make_write(name: impl Into<String>, write_time: u64) -> DmlWrite {
@@ -567,6 +642,7 @@ mod tests {
             stream_ops = $stream_ops:expr,  // Ordered set of stream items to feed to the handler
             sink_rets = $sink_ret:expr,     // Ordered set of values to return from the mock op sink
             want_ttbr = $want_ttbr:literal, // Desired TTBR value in milliseconds
+            want_reset = $want_reset:literal,  // Desired reset counter value
             // Optional set of ingest error metric label / values to assert
             want_err_metrics = [$($metric_name:literal => $metric_count:literal),*],
             want_sink = $($want_sink:tt)+   // Pattern to match against calls made to the op sink
@@ -596,16 +672,21 @@ mod tests {
                         completed_tx
                     );
 
+                    let catalog = Arc::new(MemCatalog::new(Arc::clone(&metrics))) as _;
+                    let sequencer_id = setup_sequencer(&catalog).await;
+
                     let handler = SequencedStreamHandler::new(
                         write_buffer_stream_handler,
                         SequenceNumber::new(0),
                         Arc::clone(&sink),
                         lifecycle.handle(),
                         TEST_KAFKA_TOPIC.to_string(),
-                        *TEST_KAFKA_PARTITION,
+                        TEST_KAFKA_PARTITION,
+                        sequencer_id,
                         &*metrics,
                         $skip_to_oldest_available,
-                    ).with_time_provider(iox_time::MockProvider::new(*TEST_TIME));
+                        catalog,
+                    ).await.with_time_provider(iox_time::MockProvider::new(*TEST_TIME));
 
                     // Run the handler in the background and push inputs to it
                     let shutdown = CancellationToken::default();
@@ -653,13 +734,26 @@ mod tests {
                         .fetch();
                     assert_eq!(ttbr, Duration::from_millis($want_ttbr));
 
+                    // assert reset counter
+                    let reset = metrics
+                        .get_instrument::<Metric<U64Counter>>("sequencer_reset_count")
+                        .expect("did not find reset count metric")
+                        .get_observer(&Attributes::from([
+                            ("kafka_topic", TEST_KAFKA_TOPIC.into()),
+                            ("kafka_partition", TEST_KAFKA_PARTITION.to_string().into()),
+                            ("potential_data_loss", "true".into()),
+                        ]))
+                        .expect("did not match metric attributes")
+                        .fetch();
+                    assert_eq!(reset, $want_reset);
+
                     // Assert any error metrics in the macro call
                     $(
                         let got = metrics
                             .get_instrument::<Metric<U64Counter>>("ingester_stream_handler_error")
                             .expect("did not find error metric")
                             .get_observer(&metric_attrs(
-                                *TEST_KAFKA_PARTITION,
+                                TEST_KAFKA_PARTITION,
                                 TEST_KAFKA_TOPIC,
                                 Some($metric_name),
                                 true,
@@ -679,6 +773,7 @@ mod tests {
         stream_ops = vec![vec![]],
         sink_rets = [],
         want_ttbr = 0, // No ops, no TTBR
+        want_reset = 1,
         want_err_metrics = [],
         want_sink = []
     );
@@ -692,6 +787,7 @@ mod tests {
         ],
         sink_rets = [Ok(true)],
         want_ttbr = 42,
+        want_reset = 1,
         want_err_metrics = [],
         want_sink = [DmlOperation::Write(op)] => {
             assert_eq!(op.namespace(), "bananas");
@@ -707,6 +803,7 @@ mod tests {
         ],
         sink_rets = [Ok(true)],
         want_ttbr = 24,
+        want_reset = 1,
         want_err_metrics = [],
         want_sink = [DmlOperation::Delete(op)] => {
             assert_eq!(op.namespace(), "platanos");
@@ -724,6 +821,7 @@ mod tests {
         ]],
         sink_rets = [Ok(true)],
         want_ttbr = 13,
+        want_reset = 1,
         want_err_metrics = [
             // No error metrics for I/O errors
             "sequencer_unknown_sequence_number" => 0,
@@ -745,6 +843,7 @@ mod tests {
         ]],
         sink_rets = [Ok(true)],
         want_ttbr = 31,
+        want_reset = 1,
         want_err_metrics = [
             "sequencer_unknown_sequence_number" => 1,
             "sequencer_invalid_data" => 0,
@@ -772,6 +871,7 @@ mod tests {
         ],
         sink_rets = [Ok(true)],
         want_ttbr = 31,
+        want_reset = 2,
         want_err_metrics = [
             "sequencer_unknown_sequence_number" => 0,
             "sequencer_invalid_data" => 0,
@@ -792,6 +892,7 @@ mod tests {
         ]],
         sink_rets = [Ok(true)],
         want_ttbr = 50,
+        want_reset = 1,
         want_err_metrics = [
             "sequencer_unknown_sequence_number" => 0,
             "sequencer_invalid_data" => 1,
@@ -812,6 +913,7 @@ mod tests {
         ]],
         sink_rets = [Ok(true)],
         want_ttbr = 60,
+        want_reset = 1,
         want_err_metrics = [
             "sequencer_unknown_sequence_number" => 0,
             "sequencer_invalid_data" => 0,
@@ -834,6 +936,7 @@ mod tests {
         ))]],
         sink_rets = [],
         want_ttbr = 0,
+        want_reset = 1,
         want_err_metrics = [],
         want_sink = []
     );
@@ -850,6 +953,7 @@ mod tests {
         ]],
         sink_rets = [Ok(true), Ok(false), Ok(true), Ok(false),],
         want_ttbr = 42,
+        want_reset = 1,
         want_err_metrics = [
             // No errors!
             "sequencer_unknown_sequence_number" => 0,
@@ -875,6 +979,7 @@ mod tests {
             Ok(true),
         ],
         want_ttbr = 2,
+        want_reset = 1,
         want_err_metrics = [
             "sequencer_unknown_sequence_number" => 0,
             "sequencer_invalid_data" => 0,
@@ -927,6 +1032,9 @@ mod tests {
         let write_buffer_stream_handler = EmptyWriteBufferStreamHandler {};
         let sink = MockDmlSink::default();
 
+        let catalog = Arc::new(MemCatalog::new(Arc::clone(&metrics))) as _;
+        let sequencer_id = setup_sequencer(&catalog).await;
+
         let handler = SequencedStreamHandler::new(
             write_buffer_stream_handler,
             SequenceNumber::new(0),
@@ -934,13 +1042,40 @@ mod tests {
             lifecycle.handle(),
             "kafka_topic_name".to_string(),
             KafkaPartition::new(42),
+            sequencer_id,
             &*metrics,
             false,
-        );
+            catalog,
+        )
+        .await;
 
         handler
             .run(Default::default())
             .with_timeout_panic(Duration::from_secs(1))
             .await;
+    }
+
+    async fn setup_sequencer(catalog: &Arc<dyn Catalog>) -> SequencerId {
+        let mut repos = catalog.repositories().await;
+        let kafka = repos
+            .kafka_topics()
+            .create_or_get(TEST_KAFKA_TOPIC)
+            .await
+            .unwrap();
+        let sequencer_id = repos
+            .sequencers()
+            .create_or_get(&kafka, TEST_KAFKA_PARTITION)
+            .await
+            .expect("failed to create sequencer")
+            .id;
+
+        // increase reset counter already so we can test if the metrics are initialized correctly
+        repos
+            .sequencers()
+            .inc_reset_count(sequencer_id)
+            .await
+            .unwrap();
+
+        sequencer_id
     }
 }

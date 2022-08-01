@@ -153,7 +153,7 @@ impl IngestHandlerImpl {
         }
         let data = Arc::new(IngesterData::new(
             object_store,
-            catalog,
+            Arc::clone(&catalog),
             sequencers,
             exec,
             BackoffConfig::default(),
@@ -232,6 +232,7 @@ impl IngestHandlerImpl {
                 let shutdown = shutdown.child_token();
                 let lifecycle_handle = lifecycle_handle.clone();
                 let kafka_topic_name = kafka_topic_name.clone();
+                let catalog = Arc::clone(&catalog);
                 async move {
                     let handler = SequencedStreamHandler::new(
                         op_stream,
@@ -240,9 +241,12 @@ impl IngestHandlerImpl {
                         lifecycle_handle,
                         kafka_topic_name,
                         sequencer.kafka_partition,
+                        sequencer.id,
                         &*metric_registry,
                         skip_to_oldest_available,
-                    );
+                        catalog,
+                    )
+                    .await;
 
                     handler.run(shutdown).await
                 }
