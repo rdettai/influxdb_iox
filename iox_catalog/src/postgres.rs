@@ -1107,6 +1107,27 @@ WHERE kafka_topic_id = $1
         Ok(())
     }
 
+    async fn get_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>> {
+        let rec = sqlx::query_as::<_, RestCount>(
+            r#"
+SELECT reset_count
+FROM sequencer
+WHERE id = $1;
+"#,
+        )
+        .bind(&sequencer_id) // $1
+        .fetch_one(&mut self.inner)
+        .await;
+
+        if let Err(sqlx::Error::RowNotFound) = rec {
+            return Ok(None);
+        }
+
+        let count = rec.map_err(|e| Error::SqlxError { source: e })?;
+
+        Ok(Some(count.reset_count))
+    }
+
     async fn inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>> {
         let rec = sqlx::query_as::<_, RestCount>(
             r#"

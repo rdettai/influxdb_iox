@@ -403,6 +403,9 @@ pub trait SequencerRepo: Send + Sync {
         sequence_number: SequenceNumber,
     ) -> Result<()>;
 
+    /// get reset counter if the given sequencer exists.
+    async fn get_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>>;
+
     /// increases requests count for a sequencer and returns new count if the sequencer exist.
     async fn inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>>;
 }
@@ -1357,7 +1360,34 @@ pub(crate) mod test_helpers {
         assert_eq!(
             repos
                 .sequencers()
+                .get_reset_count(sequencer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            repos
+                .sequencers()
+                .get_reset_count(sequencer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            repos
+                .sequencers()
                 .inc_reset_count(sequencer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            repos
+                .sequencers()
+                .get_reset_count(sequencer_id)
                 .await
                 .unwrap()
                 .unwrap(),
@@ -1372,6 +1402,12 @@ pub(crate) mod test_helpers {
                 .unwrap(),
             2,
         );
+        assert!(repos
+            .sequencers()
+            .get_reset_count(SequencerId::new(i64::MAX))
+            .await
+            .unwrap()
+            .is_none());
         assert!(repos
             .sequencers()
             .inc_reset_count(SequencerId::new(i64::MAX))

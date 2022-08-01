@@ -681,6 +681,16 @@ impl SequencerRepo for MemTxn {
         Ok(())
     }
 
+    async fn get_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>> {
+        let stage = self.stage();
+
+        if let Some(s) = stage.sequencers.iter_mut().find(|s| s.id == sequencer_id) {
+            return Ok(Some(s.reset_count));
+        }
+
+        Ok(None)
+    }
+
     async fn inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>> {
         let stage = self.stage();
 
