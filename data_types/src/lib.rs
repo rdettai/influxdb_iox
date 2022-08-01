@@ -164,9 +164,10 @@ pub struct SequencerId(i64);
 
 #[allow(missing_docs)]
 impl SequencerId {
-    pub fn new(v: i64) -> Self {
+    pub const fn new(v: i64) -> Self {
         Self(v)
     }
+
     pub fn get(&self) -> i64 {
         self.0
     }
@@ -185,9 +186,10 @@ pub struct KafkaPartition(i32);
 
 #[allow(missing_docs)]
 impl KafkaPartition {
-    pub fn new(v: i32) -> Self {
+    pub const fn new(v: i32) -> Self {
         Self(v)
     }
+
     pub fn get(&self) -> i32 {
         self.0
     }
