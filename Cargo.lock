@@ -1706,7 +1706,7 @@ dependencies = [
  "pbjson-types",
  "predicate",
  "prost 0.11.0",
- "prost-build 0.11.1",
+ "prost-build 0.11.0",
  "query_functions",
  "serde",
  "snafu",
@@ -3458,7 +3458,7 @@ dependencies = [
  "heck",
  "itertools",
  "prost 0.11.0",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
 ]
 
 [[package]]
@@ -3472,7 +3472,7 @@ dependencies = [
  "pbjson",
  "pbjson-build",
  "prost 0.11.0",
- "prost-build 0.11.1",
+ "prost-build 0.11.0",
  "serde",
 ]
 
@@ -3827,9 +3827,9 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
-version = "0.11.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f835c582e6bd972ba8347313300219fed5bfa52caf175298d860b61ff6069bb"
+checksum = "d49d928704208aba2cb1fb022ce1a319bdedcb03caf51ddf82734fa903407762"
 dependencies = [
  "bytes",
  "heck",
@@ -3839,7 +3839,7 @@ dependencies = [
  "multimap",
  "petgraph",
  "prost 0.11.0",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
  "regex",
  "tempfile",
  "which",
@@ -3883,9 +3883,9 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.11.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dfaa718ad76a44b3415e6c4d53b17c8f99160dcb3a99b10470fce8ad43f6e3e"
+checksum = "d30bc806a29b347314be074ff0608ef8e547286e8ea68b061a2fe55689edc01f"
 dependencies = [
  "bytes",
  "prost 0.11.0",
@@ -5597,24 +5597,24 @@ checksum = "2fbcd2800e34e743b9ae795867d5f77b535d3a3be69fd731e39145719752df8c"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build 0.11.1",
+ "prost-build 0.11.0",
  "quote",
  "syn",
 ]
 
 [[package]]
 name = "tonic-health"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9da1806c3ff2f02fb6d9b62fc72a2f3b6429c7f2f5d87861f548156708afcd71"
+checksum = "1ec5901d5260e1b7f6b5c76bfbd0b5f581cd861554b4b76597ced3cd65543561"
 dependencies = [
  "async-stream",
  "bytes",
- "prost 0.10.4",
+ "prost 0.11.0",
  "tokio",
  "tokio-stream",
- "tonic 0.7.2",
- "tonic-build 0.7.2",
+ "tonic 0.8.0",
+ "tonic-build 0.8.0",
 ]
 
 [[package]]
@@ -5625,7 +5625,7 @@ checksum = "0455f730d540a1484bffc3c55c94100b18a662597b982c2e9073f2c55c602616"
 dependencies = [
  "bytes",
  "prost 0.11.0",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
  "tokio",
  "tokio-stream",
  "tonic 0.8.0",
@@ -6241,7 +6241,7 @@ dependencies = [
  "parquet",
  "predicates",
  "prost 0.10.4",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
  "rand",
  "regex",
  "regex-automata",
