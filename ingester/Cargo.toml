@@ -30,7 +30,7 @@ parking_lot = "0.12"
 parquet_file = { path = "../parquet_file" }
 pin-project = "1.0"
 predicate = { path = "../predicate" }
-prost = "0.10"
+prost = "0.11"
 iox_query = { path = "../iox_query" }
 schema = { path = "../schema" }
 snafu = "0.7"
