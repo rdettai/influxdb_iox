@@ -624,6 +624,7 @@ impl SequencerRepo for MemTxn {
                     kafka_topic_id: topic.id,
                     kafka_partition: partition,
                     min_unpersisted_sequence_number: SequenceNumber::new(0),
+                    reset_count: 0,
                 };
                 stage.sequencers.push(sequencer);
                 stage.sequencers.last().unwrap()
@@ -678,6 +679,17 @@ impl SequencerRepo for MemTxn {
         };
 
         Ok(())
+    }
+
+    async fn inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>> {
+        let stage = self.stage();
+
+        if let Some(s) = stage.sequencers.iter_mut().find(|s| s.id == sequencer_id) {
+            s.reset_count += 1;
+            return Ok(Some(s.reset_count));
+        }
+
+        Ok(None)
     }
 }
 

@@ -232,6 +232,7 @@ decorate!(
         "sequencer_list" = list(&mut self) -> Result<Vec<Sequencer>>;
         "sequencer_list_by_kafka_topic" = list_by_kafka_topic(&mut self, topic: &KafkaTopic) -> Result<Vec<Sequencer>>;
         "sequencer_update_min_unpersisted_sequence_number" = update_min_unpersisted_sequence_number(&mut self, sequencer_id: SequencerId, sequence_number: SequenceNumber) -> Result<()>;
+        "sequencer_inc_reset_count" = inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>>;
     ]
 );
 

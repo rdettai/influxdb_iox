@@ -716,15 +716,23 @@ pub fn column_type_from_field(field_value: &FieldValue) -> ColumnType {
 pub struct Sequencer {
     /// the id of the sequencer
     pub id: SequencerId,
+
     /// the topic the sequencer is reading from
     pub kafka_topic_id: KafkaTopicId,
+
     /// the kafka partition the sequencer is reading from
     pub kafka_partition: KafkaPartition,
+
     /// The minimum unpersisted sequence number. Because different tables
     /// can be persisted at different times, it is possible some data has been persisted
     /// with a higher sequence number than this. However, all data with a sequence number
     /// lower than this must have been persisted to Parquet.
     pub min_unpersisted_sequence_number: SequenceNumber,
+
+    /// How often a sequencer was reset because the ingester was running behind the persistence window.
+    ///
+    /// This indicates data loss.
+    pub reset_count: i32,
 }
 
 /// Defines an partition via an arbitrary string within a table within

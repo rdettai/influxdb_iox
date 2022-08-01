@@ -103,6 +103,12 @@ struct Count {
     count: i64,
 }
 
+// struct to get return value from "select reset_count ..." query
+#[derive(sqlx::FromRow)]
+struct RestCount {
+    reset_count: i32,
+}
+
 impl PostgresCatalog {
     /// Connect to the catalog store.
     pub async fn connect(
@@ -1021,9 +1027,9 @@ impl SequencerRepo for PostgresTxn {
         sqlx::query_as::<_, Sequencer>(
             r#"
 INSERT INTO sequencer
-    ( kafka_topic_id, kafka_partition, min_unpersisted_sequence_number )
+    ( kafka_topic_id, kafka_partition, min_unpersisted_sequence_number, reset_count )
 VALUES
-    ( $1, $2, 0 )
+    ( $1, $2, 0, 0 )
 ON CONFLICT ON CONSTRAINT sequencer_unique
 DO UPDATE SET kafka_topic_id = sequencer.kafka_topic_id
 RETURNING *;;
@@ -1099,6 +1105,28 @@ WHERE kafka_topic_id = $1
         .map_err(|e| Error::SqlxError { source: e })?;
 
         Ok(())
+    }
+
+    async fn inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>> {
+        let rec = sqlx::query_as::<_, RestCount>(
+            r#"
+UPDATE sequencer
+SET reset_count = reset_count + 1
+WHERE id = $1
+RETURNING reset_count;
+"#,
+        )
+        .bind(&sequencer_id) // $1
+        .fetch_one(&mut self.inner)
+        .await;
+
+        if let Err(sqlx::Error::RowNotFound) = rec {
+            return Ok(None);
+        }
+
+        let count = rec.map_err(|e| Error::SqlxError { source: e })?;
+
+        Ok(Some(count.reset_count))
     }
 }
 
@@ -1695,14 +1723,14 @@ WHERE parquet_file.sequencer_id = $1
         sqlx::query_as::<_, PartitionParam>(
             r#"
 SELECT partition_id, sequencer_id, namespace_id, table_id, count(id)
-FROM parquet_file 
+FROM parquet_file
 WHERE compaction_level = 0 and to_delete is null
     and sequencer_id = $1
     and to_timestamp(created_at/1000000000) > now() -  ($2 || 'hour')::interval
 group by 1, 2, 3, 4
 having count(id) >= $3
 order by 5 DESC
-limit $4;      
+limit $4;
             "#,
         )
         .bind(&sequencer_id) // $1
@@ -1726,12 +1754,12 @@ limit $4;
         sqlx::query_as::<_, PartitionParam>(
             r#"
 SELECT partition_id, sequencer_id, namespace_id, table_id, count(id)
-FROM   parquet_file 
+FROM   parquet_file
 WHERE  compaction_level = 0 and to_delete is null
     and sequencer_id = $1
 group by 1, 2, 3, 4
 order by 5 DESC
-limit $2;      
+limit $2;
             "#,
         )
         .bind(&sequencer_id) // $1

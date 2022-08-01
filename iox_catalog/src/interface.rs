@@ -402,6 +402,9 @@ pub trait SequencerRepo: Send + Sync {
         sequencer_id: SequencerId,
         sequence_number: SequenceNumber,
     ) -> Result<()>;
+
+    /// increases requests count for a sequencer and returns new count if the sequencer exist.
+    async fn inc_reset_count(&mut self, sequencer_id: SequencerId) -> Result<Option<i32>>;
 }
 
 /// Functions for working with IOx partitions in the catalog. Note that these are how IOx splits up
@@ -1324,6 +1327,7 @@ pub(crate) mod test_helpers {
             .unwrap();
         assert_eq!(kafka.id, sequencer.kafka_topic_id);
         assert_eq!(kafka_partition, sequencer.kafka_partition);
+        let sequencer_id = sequencer.id;
 
         // update the number
         repos
@@ -1348,6 +1352,32 @@ pub(crate) mod test_helpers {
             .await
             .unwrap();
         assert!(sequencer.is_none());
+
+        // reset count
+        assert_eq!(
+            repos
+                .sequencers()
+                .inc_reset_count(sequencer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            1,
+        );
+        assert_eq!(
+            repos
+                .sequencers()
+                .inc_reset_count(sequencer_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            2,
+        );
+        assert!(repos
+            .sequencers()
+            .inc_reset_count(SequencerId::new(i64::MAX))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     async fn test_partition(catalog: Arc<dyn Catalog>) {
