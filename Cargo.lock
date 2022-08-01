@@ -136,7 +136,7 @@ dependencies = [
  "prost-derive 0.10.1",
  "tokio",
  "tonic 0.7.2",
- "tonic-build",
+ "tonic-build 0.7.2",
 ]
 
 [[package]]
@@ -665,9 +665,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.16"
+version = "3.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3dbbb6653e7c55cc8595ad3e1f7be8f32aba4eb7ff7f0fd1163d4f3d137c0a9"
+checksum = "44bbe24bbd31a185bc2c4f7c2abe80bea13a20d57ee4e55be70ac512bdc76417"
 dependencies = [
  "atty",
  "bitflags",
@@ -684,7 +684,7 @@ dependencies = [
 name = "clap_blocks"
 version = "0.1.0"
 dependencies = [
- "clap 3.2.16",
+ "clap 3.2.15",
  "data_types",
  "futures",
  "humantime",
@@ -1675,7 +1675,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-english",
- "clap 3.2.16",
+ "clap 3.2.15",
  "clap_blocks",
  "data_types",
  "filetime",
@@ -1706,12 +1706,12 @@ dependencies = [
  "pbjson-types",
  "predicate",
  "prost 0.10.4",
- "prost-build 0.11.1",
+ "prost-build 0.11.0",
  "query_functions",
  "serde",
  "snafu",
  "tonic 0.8.0",
- "tonic-build",
+ "tonic-build 0.8.0",
  "workspace-hack",
 ]
 
@@ -2068,7 +2068,7 @@ dependencies = [
  "assert_cmd",
  "backtrace",
  "bytes",
- "clap 3.2.16",
+ "clap 3.2.15",
  "clap_blocks",
  "console-subscriber",
  "data_types",
@@ -2309,7 +2309,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-english",
- "clap 3.2.16",
+ "clap 3.2.15",
  "criterion",
  "futures",
  "handlebars",
@@ -2398,7 +2398,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "clap 3.2.16",
+ "clap 3.2.15",
  "clap_blocks",
  "data_types",
  "dml",
@@ -2557,7 +2557,7 @@ name = "ioxd_test"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "clap 3.2.16",
+ "clap 3.2.15",
  "hyper",
  "ioxd_common",
  "metric",
@@ -3458,7 +3458,7 @@ dependencies = [
  "heck",
  "itertools",
  "prost 0.11.0",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
 ]
 
 [[package]]
@@ -3472,7 +3472,7 @@ dependencies = [
  "pbjson",
  "pbjson-build",
  "prost 0.11.0",
- "prost-build 0.11.1",
+ "prost-build 0.11.0",
  "serde",
 ]
 
@@ -3827,9 +3827,9 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
-version = "0.11.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f835c582e6bd972ba8347313300219fed5bfa52caf175298d860b61ff6069bb"
+checksum = "d49d928704208aba2cb1fb022ce1a319bdedcb03caf51ddf82734fa903407762"
 dependencies = [
  "bytes",
  "heck",
@@ -3839,7 +3839,7 @@ dependencies = [
  "multimap",
  "petgraph",
  "prost 0.11.0",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
  "regex",
  "tempfile",
  "which",
@@ -3883,9 +3883,9 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.11.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dfaa718ad76a44b3415e6c4d53b17c8f99160dcb3a99b10470fce8ad43f6e3e"
+checksum = "d30bc806a29b347314be074ff0608ef8e547286e8ea68b061a2fe55689edc01f"
 dependencies = [
  "bytes",
  "prost 0.11.0",
@@ -5590,6 +5590,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-build"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fbcd2800e34e743b9ae795867d5f77b535d3a3be69fd731e39145719752df8c"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "prost-build 0.11.0",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "tonic-health"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5601,7 +5614,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic 0.7.2",
- "tonic-build",
+ "tonic-build 0.7.2",
 ]
 
 [[package]]
@@ -5616,7 +5629,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic 0.7.2",
- "tonic-build",
+ "tonic-build 0.7.2",
 ]
 
 [[package]]
@@ -5688,7 +5701,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "clap 3.2.16",
+ "clap 3.2.15",
  "futures",
  "observability_deps",
  "snafu",
@@ -5826,7 +5839,7 @@ dependencies = [
 name = "trogging"
 version = "0.1.0"
 dependencies = [
- "clap 3.2.16",
+ "clap 3.2.15",
  "logfmt",
  "observability_deps",
  "regex",
@@ -6228,7 +6241,7 @@ dependencies = [
  "parquet",
  "predicates",
  "prost 0.10.4",
- "prost-types 0.11.1",
+ "prost-types 0.11.0",
  "rand",
  "regex",
  "regex-automata",
@@ -6249,7 +6262,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic 0.7.2",
- "tonic-build",
+ "tonic-build 0.7.2",
  "tower",
  "tower-http",
  "tracing",
