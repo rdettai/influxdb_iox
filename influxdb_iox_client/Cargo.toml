@@ -27,7 +27,7 @@ futures-util = { version = "0.3", optional = true }
 prost = "0.10"
 rand = "0.8.3"
 thiserror = "1.0.32"
-tonic = { version = "0.7" }
+tonic = { version = "0.8" }
 
 [dev-dependencies] # In alphabetical order
 tokio = { version = "1.20", features = ["macros", "parking_lot", "rt-multi-thread"] }
