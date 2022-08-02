@@ -253,7 +253,10 @@ where
             .await;
         info!(
             db_name=%read_info.database_name,
-            sql_query=%read_info.sql_query,
+            sql_query=%match read_info.query {
+                QueryType::Sql(ref sql) => sql.clone(),
+                QueryType::Statement(_) => "ast".to_string(),
+            },
             trace=%external_span_ctx.format_jaeger(),
             "flight do_get",
         );
