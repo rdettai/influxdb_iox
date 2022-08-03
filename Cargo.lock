@@ -555,9 +555,9 @@ checksum = "14c189c53d098945499cdfa7ecc63567cf3886b3332b312a5b4585d8d3a6a610"
 
 [[package]]
 name = "bytes"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0b3de4a0c5e67e16066a0715723abd91edc2f9001d09c46e1dca929351e130e"
+checksum = "ec8a7b6a70fde80372154c65702f00a0f56f3e1c36abbc6c440484be248856db"
 
 [[package]]
 name = "cache_system"
@@ -665,9 +665,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "3.2.15"
+version = "3.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44bbe24bbd31a185bc2c4f7c2abe80bea13a20d57ee4e55be70ac512bdc76417"
+checksum = "a3dbbb6653e7c55cc8595ad3e1f7be8f32aba4eb7ff7f0fd1163d4f3d137c0a9"
 dependencies = [
  "atty",
  "bitflags",
@@ -684,7 +684,7 @@ dependencies = [
 name = "clap_blocks"
 version = "0.1.0"
 dependencies = [
- "clap 3.2.15",
+ "clap 3.2.16",
  "data_types",
  "futures",
  "humantime",
@@ -1675,7 +1675,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-english",
- "clap 3.2.15",
+ "clap 3.2.16",
  "clap_blocks",
  "data_types",
  "filetime",
@@ -1706,7 +1706,7 @@ dependencies = [
  "pbjson-types",
  "predicate",
  "prost 0.11.0",
- "prost-build 0.11.0",
+ "prost-build 0.11.1",
  "query_functions",
  "serde",
  "snafu",
@@ -2068,7 +2068,7 @@ dependencies = [
  "assert_cmd",
  "backtrace",
  "bytes",
- "clap 3.2.15",
+ "clap 3.2.16",
  "clap_blocks",
  "console-subscriber",
  "data_types",
@@ -2309,7 +2309,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-english",
- "clap 3.2.15",
+ "clap 3.2.16",
  "criterion",
  "futures",
  "handlebars",
@@ -2398,7 +2398,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
- "clap 3.2.15",
+ "clap 3.2.16",
  "clap_blocks",
  "data_types",
  "dml",
@@ -2557,7 +2557,7 @@ name = "ioxd_test"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "clap 3.2.15",
+ "clap 3.2.16",
  "hyper",
  "ioxd_common",
  "metric",
@@ -3458,7 +3458,7 @@ dependencies = [
  "heck",
  "itertools",
  "prost 0.11.0",
- "prost-types 0.11.0",
+ "prost-types 0.11.1",
 ]
 
 [[package]]
@@ -3472,7 +3472,7 @@ dependencies = [
  "pbjson",
  "pbjson-build",
  "prost 0.11.0",
- "prost-build 0.11.0",
+ "prost-build 0.11.1",
  "serde",
 ]
 
@@ -3827,9 +3827,9 @@ dependencies = [
 
 [[package]]
 name = "prost-build"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d49d928704208aba2cb1fb022ce1a319bdedcb03caf51ddf82734fa903407762"
+checksum = "7f835c582e6bd972ba8347313300219fed5bfa52caf175298d860b61ff6069bb"
 dependencies = [
  "bytes",
  "heck",
@@ -3839,7 +3839,7 @@ dependencies = [
  "multimap",
  "petgraph",
  "prost 0.11.0",
- "prost-types 0.11.0",
+ "prost-types 0.11.1",
  "regex",
  "tempfile",
  "which",
@@ -3883,9 +3883,9 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d30bc806a29b347314be074ff0608ef8e547286e8ea68b061a2fe55689edc01f"
+checksum = "4dfaa718ad76a44b3415e6c4d53b17c8f99160dcb3a99b10470fce8ad43f6e3e"
 dependencies = [
  "bytes",
  "prost 0.11.0",
@@ -5196,9 +5196,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.98"
+version = "1.0.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c50aef8a904de4c23c788f104b7dddc7d6f79c647c7c8ce4cc8f73eb0ca773dd"
+checksum = "58dbef6ec655055e20b86b15a8cc6d439cca19b667537ac6a1369572d151ab13"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5597,7 +5597,7 @@ checksum = "2fbcd2800e34e743b9ae795867d5f77b535d3a3be69fd731e39145719752df8c"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build 0.11.0",
+ "prost-build 0.11.1",
  "quote",
  "syn",
 ]
@@ -5625,7 +5625,7 @@ checksum = "0455f730d540a1484bffc3c55c94100b18a662597b982c2e9073f2c55c602616"
 dependencies = [
  "bytes",
  "prost 0.11.0",
- "prost-types 0.11.0",
+ "prost-types 0.11.1",
  "tokio",
  "tokio-stream",
  "tonic 0.8.0",
@@ -5701,7 +5701,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
- "clap 3.2.15",
+ "clap 3.2.16",
  "futures",
  "observability_deps",
  "snafu",
@@ -5839,7 +5839,7 @@ dependencies = [
 name = "trogging"
 version = "0.1.0"
 dependencies = [
- "clap 3.2.15",
+ "clap 3.2.16",
  "logfmt",
  "observability_deps",
  "regex",
@@ -6241,7 +6241,7 @@ dependencies = [
  "parquet",
  "predicates",
  "prost 0.10.4",
- "prost-types 0.11.0",
+ "prost-types 0.11.1",
  "rand",
  "regex",
  "regex-automata",
