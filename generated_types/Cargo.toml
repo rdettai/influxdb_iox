@@ -23,7 +23,7 @@ workspace-hack = { path = "../workspace-hack"}
 [build-dependencies] # In alphabetical order
 tonic-build = "0.7"
 prost-build = "0.10"
-pbjson-build = "0.3"
+pbjson-build = "0.4"
 
 [dev-dependencies]
 data_types = { path = "../data_types" }
