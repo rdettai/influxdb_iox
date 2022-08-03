@@ -19,7 +19,7 @@ observability_deps = { path = "../observability_deps" }
 parking_lot = "0.12"
 parquet = {version = "19.0.0", features = ["experimental"]}
 parquet-format = "4.0"
-pbjson-types = "0.3"
+pbjson-types = "0.4"
 predicate = { path = "../predicate" }
 prost = "0.10"
 schema = { path = "../schema" }
