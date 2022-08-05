@@ -472,4 +472,4 @@ workflows:
         - not: << pipeline.parameters.ci_image >>
         - not: << pipeline.parameters.build_perf >>
     jobs:
-      - ci_image:
+      - ci_image
