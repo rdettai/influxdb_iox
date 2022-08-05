@@ -28,6 +28,7 @@ use tokio::runtime::Runtime;
 
 mod commands {
     pub mod catalog;
+    pub mod compactor;
     pub mod debug;
     pub mod query;
     pub mod query_ingester;
@@ -157,6 +158,9 @@ enum Command {
     /// Various commands for catalog manipulation
     Catalog(commands::catalog::Config),
 
+    /// Various commands for compactor manipulation
+    Compactor(Box<commands::compactor::Config>),
+
     /// Interrogate internal database data
     Debug(commands::debug::Config),
 
@@ -270,6 +274,13 @@ fn main() -> Result<(), std::io::Error> {
             Some(Command::Catalog(config)) => {
                 let _tracing_guard = handle_init_logs(init_simple_logs(log_verbose_count));
                 if let Err(e) = commands::catalog::command(config).await {
+                    eprintln!("{}", e);
+                    std::process::exit(ReturnCode::Failure as _)
+                }
+            }
+            Some(Command::Compactor(config)) => {
+                let _tracing_guard = handle_init_logs(init_simple_logs(log_verbose_count));
+                if let Err(e) = commands::compactor::command(*config).await {
                     eprintln!("{}", e);
                     std::process::exit(ReturnCode::Failure as _)
                 }
