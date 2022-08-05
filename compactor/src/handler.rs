@@ -256,11 +256,17 @@ async fn run_compactor(compactor: Arc<Compactor>, shutdown: CancellationToken) {
     while !shutdown.is_cancelled() {
         debug!("compactor main loop tick.");
 
-        for _ in 0..compactor.config.hot_multiple {
-            compact_hot_partitions(Arc::clone(&compactor)).await;
-        }
-        compact_cold_partitions(Arc::clone(&compactor)).await;
+        run_compactor_once(Arc::clone(&compactor)).await;
     }
+}
+
+/// Checks for candidate partitions to compact and spawns tokio tasks to compact as many
+/// as the configuration will allow.
+pub async fn run_compactor_once(compactor: Arc<Compactor>) {
+    for _ in 0..compactor.config.hot_multiple {
+        compact_hot_partitions(Arc::clone(&compactor)).await;
+    }
+    compact_cold_partitions(compactor).await;
 }
 
 async fn compact_hot_partitions(compactor: Arc<Compactor>) {
