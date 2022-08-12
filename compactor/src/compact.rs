@@ -667,7 +667,7 @@ mod tests {
         };
         let pf2 = txn.parquet_files().create(p2).await.unwrap();
         txn.parquet_files()
-            .update_to_level_1(&[pf2.id])
+            .update_compaction_level(&[pf2.id], CompactionLevel::FileNonOverlapped)
             .await
             .unwrap();
         txn.commit().await.unwrap();
@@ -962,7 +962,7 @@ mod tests {
         };
         let pf2 = txn.parquet_files().create(p2).await.unwrap();
         txn.parquet_files()
-            .update_to_level_1(&[pf2.id])
+            .update_compaction_level(&[pf2.id], CompactionLevel::FileNonOverlapped)
             .await
             .unwrap();
         txn.commit().await.unwrap();
