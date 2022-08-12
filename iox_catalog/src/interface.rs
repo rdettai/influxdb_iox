@@ -2725,7 +2725,7 @@ pub(crate) mod test_helpers {
             (catalog.time_provider().now() - Duration::from_secs(60 * 60 * 38)).timestamp_nanos(),
         );
 
-        let older_than = 24;
+        let older_than = 8;
         let num_partitions = 2;
 
         // Db has no partition
