@@ -124,9 +124,13 @@ pub struct CompactorConfig {
     /// threshold. Later compactions will pick up the remaining L0 files.
     cold_input_size_threshold_bytes: u64,
 
-    /// A compaction operation or cold partitions  will gather as many L0 files with their
-    /// overlapping L1 files to compact together until the total number of L0 + L1 files crosses this
-    /// threshold. Later compactions will pick up the remaining L0 files.
+    /// Desired max size of cold compacted parquet files.
+    /// It is a target desired value, rather than a guarantee.
+    cold_max_desired_file_size_bytes: u64,
+
+    /// A compaction operation will gather as many L0 files with their overlapping L1 files to
+    /// compact together until the total number of L0 + L1 files crosses this threshold. Later
+    /// compactions will pick up the remaining L0 files.
     ///
     /// A compaction operation will be limited by this or by the input size threshold, whichever is
     /// hit first.
@@ -160,6 +164,7 @@ impl CompactorConfig {
         max_number_partitions_per_shard: usize,
         min_number_recent_ingested_files_per_partition: usize,
         cold_input_size_threshold_bytes: u64,
+        cold_max_desired_file_size_bytes: u64,
         cold_input_file_count_threshold: usize,
         hot_multiple: usize,
         memory_budget_bytes: u64,
@@ -174,6 +179,7 @@ impl CompactorConfig {
             max_number_partitions_per_shard,
             min_number_recent_ingested_files_per_partition,
             cold_input_size_threshold_bytes,
+            cold_max_desired_file_size_bytes,
             cold_input_file_count_threshold,
             memory_budget_bytes,
             hot_multiple,
@@ -212,7 +218,12 @@ impl CompactorConfig {
         self.cold_input_size_threshold_bytes
     }
 
-    /// A compaction operation for cold partitions will gather as many L0 files with their overlapping L1 files to
+    /// Desired max size of cold compacted parquet files.
+    pub fn cold_max_desired_file_size_bytes(&self) -> u64 {
+        self.cold_max_desired_file_size_bytes
+    }
+
+    /// A compaction operation will gather as many L0 files with their overlapping L1 files to
     /// compact together until the total number of L0 + L1 files crosses this threshold. Later
     /// compactions will pick up the remaining L0 files.
     ///
@@ -333,6 +344,7 @@ async fn compact_cold_partitions(compactor: Arc<Compactor>) -> usize {
             let comp = Arc::clone(&compactor);
             tokio::task::spawn(async move {
                 let partition_id = p.candidate.partition_id;
+                let p = Arc::new(p);
                 let compaction_result = crate::compact_cold_partition(&comp, p).await;
 
                 match compaction_result {
