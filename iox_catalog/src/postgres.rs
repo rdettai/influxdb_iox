@@ -1657,12 +1657,13 @@ SELECT id, shard_id, namespace_id, table_id, partition_id, object_store_id,
        row_count, compaction_level, created_at, column_set
 FROM parquet_file
 WHERE parquet_file.shard_id = $1
-  AND parquet_file.compaction_level = 0
+  AND parquet_file.compaction_level = $2
   AND parquet_file.to_delete IS NULL
   LIMIT 1000;
         "#,
         )
         .bind(&shard_id) // $1
+        .bind(CompactionLevel::Initial) // $2
         .fetch_all(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })
@@ -1721,7 +1722,7 @@ WHERE parquet_file.shard_id = $1
             r#"
 SELECT partition_id, shard_id, namespace_id, table_id, count(id)
 FROM parquet_file
-WHERE compaction_level = 0 and to_delete is null
+WHERE compaction_level = $5 and to_delete is null
     and shard_id = $1
     and to_timestamp(created_at/1000000000) > now() -  ($2 || 'hour')::interval
 group by 1, 2, 3, 4
@@ -1734,6 +1735,7 @@ limit $4;
         .bind(num_hours) //$2
         .bind(&min_num_files) // $3
         .bind(&num_partitions) // $4
+        .bind(CompactionLevel::Initial) // $5
         .fetch_all(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })
@@ -1859,7 +1861,7 @@ WHERE table_id = $1
   AND shard_id = $2
   AND max_sequence_number < $3
   AND parquet_file.to_delete IS NULL
-  AND compaction_level = 0
+  AND compaction_level = $6
   AND ((parquet_file.min_time <= $4 AND parquet_file.max_time >= $4)
   OR (parquet_file.min_time > $4 AND parquet_file.min_time <= $5));
             "#,
@@ -1869,6 +1871,7 @@ WHERE table_id = $1
         .bind(sequence_number) // $3
         .bind(min_time) // $4
         .bind(max_time) // $5
+        .bind(CompactionLevel::Initial) // $6
         .fetch_one(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })?;
@@ -1890,7 +1893,7 @@ FROM parquet_file
 WHERE table_id = $1
   AND shard_id = $2
   AND parquet_file.to_delete IS NULL
-  AND compaction_level = 1
+  AND compaction_level = $5
   AND ((parquet_file.min_time <= $3 AND parquet_file.max_time >= $3)
   OR (parquet_file.min_time > $3 AND parquet_file.min_time <= $4));
             "#,
@@ -1899,6 +1902,7 @@ WHERE table_id = $1
         .bind(&shard_id) // $2
         .bind(min_time) // $3
         .bind(max_time) // $4
+        .bind(CompactionLevel::FileNonOverlapped) // $5
         .fetch_one(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })?;
