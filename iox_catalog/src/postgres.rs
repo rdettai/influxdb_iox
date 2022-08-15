@@ -1739,7 +1739,7 @@ limit $4;
         .map_err(|e| Error::SqlxError { source: e })
     }
 
-    async fn most_level_0_files_partitions(
+    async fn most_cold_files_partitions(
         &mut self,
         shard_id: ShardId,
         older_than_num_hours: u32,
@@ -1754,7 +1754,7 @@ limit $4;
             r#"
 SELECT partition_id, shard_id, namespace_id, table_id, count(id), max(created_at)
 FROM   parquet_file
-WHERE  compaction_level = 0
+WHERE  (compaction_level = $4 OR compaction_level = $5)
 AND    to_delete IS NULL
 AND    shard_id = $1
 GROUP BY 1, 2, 3, 4
@@ -1766,6 +1766,8 @@ LIMIT $3;
         .bind(&shard_id) // $1
         .bind(&older_than_num_hours) // $2
         .bind(&num_partitions) // $3
+        .bind(CompactionLevel::Initial) // $4
+        .bind(CompactionLevel::FileNonOverlapped) // $5
         .fetch_all(&mut self.inner)
         .await
         .map_err(|e| Error::SqlxError { source: e })

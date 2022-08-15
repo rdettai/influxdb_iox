@@ -1196,7 +1196,7 @@ impl ParquetFileRepo for MemTxn {
         Ok(partitions)
     }
 
-    async fn most_level_0_files_partitions(
+    async fn most_cold_files_partitions(
         &mut self,
         shard_id: ShardId,
         older_than_num_hours: u32,
@@ -1213,7 +1213,8 @@ impl ParquetFileRepo for MemTxn {
             .iter()
             .filter(|f| {
                 f.shard_id == shard_id
-                    && f.compaction_level == CompactionLevel::Initial
+                    && (f.compaction_level == CompactionLevel::Initial
+                        || f.compaction_level == CompactionLevel::FileNonOverlapped)
                     && f.to_delete.is_none()
             })
             .collect::<Vec<_>>();

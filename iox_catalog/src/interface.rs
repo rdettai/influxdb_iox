@@ -566,9 +566,10 @@ pub trait ParquetFileRepo: Send + Sync {
         num_partitions: usize,
     ) -> Result<Vec<PartitionParam>>;
 
-    /// List partitions with the most level 0 files created earlier than `older_than_num_hours`
-    /// hours ago for a given shard. In other words, "cold" partitions that need compaction.
-    async fn most_level_0_files_partitions(
+    /// List partitions with the most level 0 + level 1 files created earlier than
+    /// `older_than_num_hours` hours ago for a given shard. In other words, "cold" partitions
+    /// that need compaction.
+    async fn most_cold_files_partitions(
         &mut self,
         shard_id: ShardId,
         older_than_num_hours: u32,
@@ -874,7 +875,7 @@ pub(crate) mod test_helpers {
         test_parquet_file(Arc::clone(&catalog)).await;
         test_parquet_file_compaction_level_0(Arc::clone(&catalog)).await;
         test_parquet_file_compaction_level_1(Arc::clone(&catalog)).await;
-        test_most_level_0_files_partitions(Arc::clone(&catalog)).await;
+        test_most_cold_files_partitions(Arc::clone(&catalog)).await;
         test_recent_highest_throughput_partitions(Arc::clone(&catalog)).await;
         test_update_to_compaction_level_1(Arc::clone(&catalog)).await;
         test_processed_tombstones(Arc::clone(&catalog)).await;
@@ -2693,12 +2694,12 @@ pub(crate) mod test_helpers {
         );
     }
 
-    async fn test_most_level_0_files_partitions(catalog: Arc<dyn Catalog>) {
+    async fn test_most_cold_files_partitions(catalog: Arc<dyn Catalog>) {
         let mut repos = catalog.repositories().await;
-        let topic = repos.topics().create_or_get("most_level_0").await.unwrap();
+        let topic = repos.topics().create_or_get("most_cold").await.unwrap();
         let pool = repos
             .query_pools()
-            .create_or_get("most_level_0")
+            .create_or_get("most_cold")
             .await
             .unwrap();
         let namespace = repos
@@ -2718,7 +2719,7 @@ pub(crate) mod test_helpers {
             .unwrap();
         let shard = repos
             .shards()
-            .create_or_get(&topic, ShardIndex::new(100))
+            .create_or_get(&topic, ShardIndex::new(88))
             .await
             .unwrap();
 
@@ -2735,10 +2736,14 @@ pub(crate) mod test_helpers {
         // Db has no partition
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
-        assert!(partitions.is_empty());
+        assert!(
+            partitions.is_empty(),
+            "Expected no partitions, instead got {:#?}",
+            partitions,
+        );
 
         // The DB has 1 partition but it does not have any files
         let partition = repos
@@ -2748,10 +2753,14 @@ pub(crate) mod test_helpers {
             .unwrap();
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
-        assert!(partitions.is_empty());
+        assert!(
+            partitions.is_empty(),
+            "Expected no partitions, instead got {:#?}",
+            partitions,
+        );
 
         // The partition has one deleted file
         let parquet_file_params = ParquetFileParams {
@@ -2781,10 +2790,14 @@ pub(crate) mod test_helpers {
             .unwrap();
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
-        assert!(partitions.is_empty());
+        assert!(
+            partitions.is_empty(),
+            "Expected no partitions, instead got {:#?}",
+            partitions,
+        );
 
         // A partition with one cold file and one hot file
         let hot_partition = repos
@@ -2811,10 +2824,42 @@ pub(crate) mod test_helpers {
         repos.parquet_files().create(hot_file_params).await.unwrap();
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
-        assert!(partitions.is_empty());
+        assert!(
+            partitions.is_empty(),
+            "Expected no partitions, instead got {:#?}",
+            partitions,
+        );
+
+        // A partition that has only one non-deleted level 2 file, should never be returned
+        let already_compacted_partition = repos
+            .partitions()
+            .create_or_get("already_compacted".into(), shard.id, table.id)
+            .await
+            .unwrap();
+        let l2_file_params = ParquetFileParams {
+            object_store_id: Uuid::new_v4(),
+            partition_id: already_compacted_partition.id,
+            compaction_level: CompactionLevel::Final,
+            ..parquet_file_params.clone()
+        };
+        repos
+            .parquet_files()
+            .create(l2_file_params.clone())
+            .await
+            .unwrap();
+        let partitions = repos
+            .parquet_files()
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
+            .await
+            .unwrap();
+        assert!(
+            partitions.is_empty(),
+            "Expected no partitions, instead got {:#?}",
+            partitions,
+        );
 
         // The partition has one non-deleted level 0 file
         let l0_file_params = ParquetFileParams {
@@ -2828,12 +2873,12 @@ pub(crate) mod test_helpers {
             .unwrap();
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
         assert_eq!(partitions.len(), 1);
 
-        // The DB has 2 partitions; both have non-deleted L0 files
+        // The DB has 3 partitions; 2 have non-deleted L0 files
         let another_partition = repos
             .partitions()
             .create_or_get("two".into(), shard.id, table.id)
@@ -2862,15 +2907,15 @@ pub(crate) mod test_helpers {
         // Must return 2 partitions
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
         assert_eq!(partitions.len(), 2);
-        // They must be in order another_partition (more L0 files), partition
+        // They must be in order another_partition (more files), partition
         assert_eq!(partitions[0].partition_id, another_partition.id); // 2 files
         assert_eq!(partitions[1].partition_id, partition.id); // 1 file
 
-        // The DB has 3 partitions with non-deleted L0 files
+        // The DB now has 3 partitions with non-deleted L0 files
         let third_partition = repos
             .partitions()
             .create_or_get("three".into(), shard.id, table.id)
@@ -2889,12 +2934,43 @@ pub(crate) mod test_helpers {
         // Still return 2 partitions the limit num_partitions=2
         let partitions = repos
             .parquet_files()
-            .most_level_0_files_partitions(shard.id, older_than, num_partitions)
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
             .await
             .unwrap();
         assert_eq!(partitions.len(), 2);
-        // and the first one should still be the one with the most L0 files
+        // and the first one should still be the one with the most files
         assert_eq!(partitions[0].partition_id, another_partition.id);
+
+        // The DB now has 4 partitions, one of which has 3 non-deleted L1 files
+        let fourth_partition = repos
+            .partitions()
+            .create_or_get("four".into(), shard.id, table.id)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            let file_params = ParquetFileParams {
+                object_store_id: Uuid::new_v4(),
+                partition_id: fourth_partition.id,
+                compaction_level: CompactionLevel::FileNonOverlapped,
+                ..parquet_file_params.clone()
+            };
+            repos
+                .parquet_files()
+                .create(file_params.clone())
+                .await
+                .unwrap();
+        }
+        // Still return 2 partitions with the limit num_partitions=2
+        let partitions = repos
+            .parquet_files()
+            .most_cold_files_partitions(shard.id, older_than, num_partitions)
+            .await
+            .unwrap();
+        assert_eq!(partitions.len(), 2);
+        // the first one should now be the one with the most files, which happen to be L1
+        assert_eq!(partitions[0].partition_id, fourth_partition.id);
+        // the second one should be the one with 2 files
+        assert_eq!(partitions[1].partition_id, another_partition.id);
     }
 
     async fn test_recent_highest_throughput_partitions(catalog: Arc<dyn Catalog>) {
