@@ -212,6 +212,7 @@ async fn full_compaction(
                 compactor.store.clone(),
                 Arc::clone(&compactor.exec),
                 Arc::clone(&compactor.time_provider),
+                &compactor.compaction_input_file_bytes,
             )
             .await
             .context(CombiningSnafu)?;
