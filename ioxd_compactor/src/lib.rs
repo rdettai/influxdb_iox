@@ -194,7 +194,6 @@ pub async fn build_compactor_from_config(
         compactor_config.max_number_partitions_per_shard,
         compactor_config.min_number_recent_ingested_files_per_partition,
         compactor_config.cold_input_size_threshold_bytes,
-        compactor_config.cold_max_desired_file_size_bytes,
         compactor_config.cold_input_file_count_threshold,
         compactor_config.hot_multiple,
         compactor_config.memory_budget_bytes,

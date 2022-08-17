@@ -124,10 +124,6 @@ pub struct CompactorConfig {
     /// threshold. Later compactions will pick up the remaining L0 files.
     cold_input_size_threshold_bytes: u64,
 
-    /// Desired max size of cold compacted parquet files.
-    /// It is a target desired value, rather than a guarantee.
-    cold_max_desired_file_size_bytes: u64,
-
     /// A compaction operation will gather as many L0 files with their overlapping L1 files to
     /// compact together until the total number of L0 + L1 files crosses this threshold. Later
     /// compactions will pick up the remaining L0 files.
@@ -164,7 +160,6 @@ impl CompactorConfig {
         max_number_partitions_per_shard: usize,
         min_number_recent_ingested_files_per_partition: usize,
         cold_input_size_threshold_bytes: u64,
-        cold_max_desired_file_size_bytes: u64,
         cold_input_file_count_threshold: usize,
         hot_multiple: usize,
         memory_budget_bytes: u64,
@@ -179,7 +174,6 @@ impl CompactorConfig {
             max_number_partitions_per_shard,
             min_number_recent_ingested_files_per_partition,
             cold_input_size_threshold_bytes,
-            cold_max_desired_file_size_bytes,
             cold_input_file_count_threshold,
             memory_budget_bytes,
             hot_multiple,
@@ -216,11 +210,6 @@ impl CompactorConfig {
     /// threshold. Later compactions will pick up the remaining L0 files.
     pub fn cold_input_size_threshold_bytes(&self) -> u64 {
         self.cold_input_size_threshold_bytes
-    }
-
-    /// Desired max size of cold compacted parquet files.
-    pub fn cold_max_desired_file_size_bytes(&self) -> u64 {
-        self.cold_max_desired_file_size_bytes
     }
 
     /// A compaction operation will gather as many L0 files with their overlapping L1 files to

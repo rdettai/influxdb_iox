@@ -793,7 +793,6 @@ mod tests {
         let max_number_partitions_per_shard = 1;
         let min_number_recent_ingested_per_partition = 1;
         let cold_input_size_threshold_bytes = 600 * 1024 * 1024;
-        let cold_max_desired_file_size_bytes = 104_857_600;
         let cold_input_file_count_threshold = 100;
         let hot_multiple = 4;
         let memory_budget_bytes = 10 * 1024 * 1024;
@@ -805,7 +804,6 @@ mod tests {
             max_number_partitions_per_shard,
             min_number_recent_ingested_per_partition,
             cold_input_size_threshold_bytes,
-            cold_max_desired_file_size_bytes,
             cold_input_file_count_threshold,
             hot_multiple,
             memory_budget_bytes,
