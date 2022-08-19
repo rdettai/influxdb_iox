@@ -11,6 +11,7 @@
     clippy::use_self,
     clippy::clone_on_ref_ptr
 )]
+mod common;
 mod expression;
 mod identifier;
 mod keywords;
