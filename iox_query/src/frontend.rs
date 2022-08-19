@@ -2,6 +2,7 @@ pub mod common;
 pub mod influxrpc;
 pub mod reorg;
 pub mod sql;
+mod sql_rewrite;
 
 #[cfg(test)]
 mod test {

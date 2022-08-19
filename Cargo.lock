@@ -2434,6 +2434,7 @@ dependencies = [
  "query_functions",
  "schema",
  "snafu",
+ "sqlparser",
  "test_helpers",
  "tokio",
  "tokio-stream",

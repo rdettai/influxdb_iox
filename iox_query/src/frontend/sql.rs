@@ -3,6 +3,8 @@ use std::sync::Arc;
 use crate::exec::context::IOxSessionContext;
 use datafusion::{error::Result, physical_plan::ExecutionPlan};
 
+use super::sql_rewrite::rewrite_sql;
+
 /// This struct can create plans for running SQL queries against databases
 #[derive(Debug, Default)]
 pub struct SqlQueryPlanner {}
@@ -19,6 +21,8 @@ impl SqlQueryPlanner {
         query: &str,
         ctx: &IOxSessionContext,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        ctx.prepare_sql(query).await
+        let query = rewrite_sql(query);
+
+        ctx.prepare_sql(&query).await
     }
 }

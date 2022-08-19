@@ -30,6 +30,7 @@ observability_deps = { path = "../observability_deps" }
 parking_lot = "0.12"
 query_functions = { path = "../query_functions"}
 schema = { path = "../schema" }
+sqlparser = "0.21.0"
 snafu = "0.7"
 tokio = { version = "1.20", features = ["macros", "parking_lot"] }
 tokio-stream = "0.1"
