@@ -83,6 +83,7 @@ impl fmt::Display for ShowMeasurementsStatement {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum MeasurementExpression {
     Equals(MeasurementNameExpression),
+    // TODO(sgc): Add regex
 }
 
 impl fmt::Display for MeasurementExpression {
@@ -125,7 +126,6 @@ pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
         ShowMeasurementsStatement {
             on_expression,
             measurement_expression,
-            ..Default::default()
         },
     ))
 }
@@ -167,7 +167,6 @@ mod test {
                         name: Identifier::Unquoted("bar".into()),
                     }
                 )),
-                ..Default::default()
             },
         );
         assert_eq!(
