@@ -13,7 +13,7 @@ use nom::{sequence::tuple, IResult};
 use std::fmt;
 use std::fmt::Formatter;
 
-use crate::common::{measurement_name_expression, statement_terminator, MeasurementNameExpression};
+use crate::common::{measurement_name_expression, statement_terminator, MeasurementNameExpression, limit_clause};
 use crate::identifier::{identifier, Identifier};
 
 /// OnExpression represents an InfluxQL database or retention policy name
@@ -62,6 +62,8 @@ fn on_expression(i: &str) -> IResult<&str, OnExpression> {
 pub struct ShowMeasurementsStatement {
     pub on_expression: Option<OnExpression>,
     pub measurement_expression: Option<MeasurementExpression>,
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
 }
 
 impl fmt::Display for ShowMeasurementsStatement {
@@ -74,6 +76,10 @@ impl fmt::Display for ShowMeasurementsStatement {
 
         if let Some(ref expr) = self.measurement_expression {
             write!(f, " WITH MEASUREMENT {}", expr)?;
+        }
+
+        if let Some(limit) = self.limit {
+            write!(f, " LIMIT {}", limit)?;
         }
 
         Ok(())
@@ -112,12 +118,13 @@ fn with_measurement_expression(i: &str) -> IResult<&str, MeasurementExpression> 
 }
 
 pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
-    let (remaining_input, (_, _, _, on_expression, measurement_expression, _)) = tuple((
+    let (remaining_input, (_, _, _, on_expression, measurement_expression, limit, _)) = tuple((
         tag_no_case("show"),
         multispace1,
         tag_no_case("measurements"),
         opt(preceded(multispace1, on_expression)),
         opt(preceded(multispace1, with_measurement_expression)),
+        opt(preceded(multispace1, limit_clause)),
         statement_terminator,
     ))(i)?;
 
@@ -126,6 +133,8 @@ pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
         ShowMeasurementsStatement {
             on_expression,
             measurement_expression,
+            limit,
+            ..Default::default()
         },
     ))
 }
@@ -155,7 +164,7 @@ mod test {
         );
 
         let (_, got) =
-            show_measurements("SHOW  MEASUREMENTS  ON  foo  WITH  MEASUREMENT  =  bar;").unwrap();
+            show_measurements("SHOW  MEASUREMENTS  ON  foo  WITH  MEASUREMENT  =  bar LIMIT 10;").unwrap();
         assert_eq!(
             got,
             ShowMeasurementsStatement {
@@ -167,11 +176,13 @@ mod test {
                         name: Identifier::Unquoted("bar".into()),
                     }
                 )),
+                limit: Some(10),
+                ..Default::default()
             },
         );
         assert_eq!(
             got.to_string(),
-            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT = bar"
+            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT = bar LIMIT 10"
         );
     }
 

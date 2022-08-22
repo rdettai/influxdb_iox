@@ -3,10 +3,10 @@
 use crate::identifier::{identifier, Identifier};
 use core::fmt;
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::character::complete::{line_ending, multispace0};
-use nom::combinator::{eof, map, opt};
-use nom::sequence::{delimited, pair, terminated};
+use nom::bytes::complete::{tag, tag_no_case};
+use nom::character::complete::{digit1, line_ending, multispace0, multispace1};
+use nom::combinator::{eof, map, map_res, opt};
+use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::IResult;
 use std::fmt::Formatter;
 
@@ -91,6 +91,17 @@ pub fn measurement_name_expression(i: &str) -> IResult<&str, MeasurementNameExpr
     ))
 }
 
+// Parse an unsigned integer.
+pub fn unsigned_number(i: &str) -> IResult<&str, u64> {
+    map_res(digit1, |s: &str| {
+        s.parse()
+    })(i)
+}
+
+pub fn limit_clause(i: &str) -> IResult<&str, u64> {
+    preceded(pair(tag_no_case("LIMIT"), multispace1), unsigned_number)(i)
+}
+
 // Parse a terminator that ends a SQL statement.
 pub fn statement_terminator(i: &str) -> IResult<&str, ()> {
     let (remaining_input, _) =
@@ -138,5 +149,21 @@ mod tests {
                 name: name.clone(),
             }
         );
+    }
+
+    #[test]
+    fn test_limit_clause() {
+        let (_, got) = limit_clause("LIMIT 587").unwrap();
+        assert_eq!(got, 587);
+
+        // extra spaces between tokens
+        let (_, got) = limit_clause("LIMIT     123").unwrap();
+        assert_eq!(got, 123);
+
+        // not digits
+        assert!(limit_clause("LIMIT sdf").is_err());
+
+        // overflow
+        assert!(limit_clause("LIMIT 34593745733489743985734857394").is_err());
     }
 }
