@@ -93,13 +93,17 @@ pub fn measurement_name_expression(i: &str) -> IResult<&str, MeasurementNameExpr
 
 // Parse an unsigned integer.
 pub fn unsigned_number(i: &str) -> IResult<&str, u64> {
-    map_res(digit1, |s: &str| {
-        s.parse()
-    })(i)
+    map_res(digit1, |s: &str| s.parse())(i)
 }
 
+// Parse a LIMIT <n> clause.
 pub fn limit_clause(i: &str) -> IResult<&str, u64> {
     preceded(pair(tag_no_case("LIMIT"), multispace1), unsigned_number)(i)
+}
+
+// Parse an OFFSET <n> clause.
+pub fn offset_clause(i: &str) -> IResult<&str, u64> {
+    preceded(pair(tag_no_case("OFFSET"), multispace1), unsigned_number)(i)
 }
 
 // Parse a terminator that ends a SQL statement.
@@ -156,6 +160,10 @@ mod tests {
         let (_, got) = limit_clause("LIMIT 587").unwrap();
         assert_eq!(got, 587);
 
+        // case insensitive
+        let (_, got) = limit_clause("limit 587").unwrap();
+        assert_eq!(got, 587);
+
         // extra spaces between tokens
         let (_, got) = limit_clause("LIMIT     123").unwrap();
         assert_eq!(got, 123);
@@ -165,5 +173,25 @@ mod tests {
 
         // overflow
         assert!(limit_clause("LIMIT 34593745733489743985734857394").is_err());
+    }
+
+    #[test]
+    fn test_offset_clause() {
+        let (_, got) = offset_clause("OFFSET 587").unwrap();
+        assert_eq!(got, 587);
+
+        // case insensitive
+        let (_, got) = offset_clause("offset 587").unwrap();
+        assert_eq!(got, 587);
+
+        // extra spaces between tokens
+        let (_, got) = offset_clause("OFFSET     123").unwrap();
+        assert_eq!(got, 123);
+
+        // not digits
+        assert!(offset_clause("OFFSET sdf").is_err());
+
+        // overflow
+        assert!(offset_clause("OFFSET 34593745733489743985734857394").is_err());
     }
 }

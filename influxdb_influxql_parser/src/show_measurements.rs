@@ -13,7 +13,10 @@ use nom::{sequence::tuple, IResult};
 use std::fmt;
 use std::fmt::Formatter;
 
-use crate::common::{measurement_name_expression, statement_terminator, MeasurementNameExpression, limit_clause};
+use crate::common::{
+    limit_clause, measurement_name_expression, offset_clause, statement_terminator,
+    MeasurementNameExpression,
+};
 use crate::identifier::{identifier, Identifier};
 
 /// OnExpression represents an InfluxQL database or retention policy name
@@ -82,6 +85,10 @@ impl fmt::Display for ShowMeasurementsStatement {
             write!(f, " LIMIT {}", limit)?;
         }
 
+        if let Some(offset) = self.offset {
+            write!(f, " OFFSET {}", offset)?;
+        }
+
         Ok(())
     }
 }
@@ -118,13 +125,26 @@ fn with_measurement_expression(i: &str) -> IResult<&str, MeasurementExpression> 
 }
 
 pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
-    let (remaining_input, (_, _, _, on_expression, measurement_expression, limit, _)) = tuple((
+    let (
+        remaining_input,
+        (
+            _, // "SHOW"
+            _, // <ws>
+            _, // "MEASUREMENTS"
+            on_expression,
+            measurement_expression,
+            limit,
+            offset,
+            _, // ";"
+        ),
+    ) = tuple((
         tag_no_case("show"),
         multispace1,
         tag_no_case("measurements"),
         opt(preceded(multispace1, on_expression)),
         opt(preceded(multispace1, with_measurement_expression)),
         opt(preceded(multispace1, limit_clause)),
+        opt(preceded(multispace1, offset_clause)),
         statement_terminator,
     ))(i)?;
 
@@ -134,7 +154,7 @@ pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
             on_expression,
             measurement_expression,
             limit,
-            ..Default::default()
+            offset,
         },
     ))
 }
@@ -163,8 +183,10 @@ mod test {
             },
         );
 
-        let (_, got) =
-            show_measurements("SHOW  MEASUREMENTS  ON  foo  WITH  MEASUREMENT  =  bar LIMIT 10;").unwrap();
+        let (_, got) = show_measurements(
+            "SHOW  MEASUREMENTS  ON  foo  WITH  MEASUREMENT  =  bar LIMIT 10 OFFSET 20;",
+        )
+        .unwrap();
         assert_eq!(
             got,
             ShowMeasurementsStatement {
@@ -177,12 +199,12 @@ mod test {
                     }
                 )),
                 limit: Some(10),
-                ..Default::default()
+                offset: Some(20)
             },
         );
         assert_eq!(
             got.to_string(),
-            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT = bar LIMIT 10"
+            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT = bar LIMIT 10 OFFSET 20"
         );
     }
 
