@@ -105,12 +105,19 @@ pub(crate) async fn compact_parquet_files(
         }
     );
 
+    println!(
+        "=== max_desired_file_size_bytes: {}",
+        max_desired_file_size_bytes
+    );
+
     // Save all file sizes for recording metrics if this compaction succeeds.
     let file_sizes: Vec<_> = files.iter().map(|f| f.file_size_bytes).collect();
     // Find the total size of all files, to be used to determine if the result should be one file
     // or if the result should be split into multiple files.
     let total_size: i64 = file_sizes.iter().sum();
     let total_size = total_size as u64;
+
+    println!("=== total file size: {}", total_size);
 
     // Compute the number of files per compaction level for logging
     let mut num_files_by_level = BTreeMap::new();
@@ -157,6 +164,8 @@ pub(crate) async fn compact_parquet_files(
     let mut max_sequence_number = head.max_sequence_number();
     let mut min_time = head.min_time();
     let mut max_time = head.max_time();
+
+    println!(" === min_time: {}, max_time: {}", min_time, max_time);
     for c in tail {
         max_sequence_number = max(max_sequence_number, c.max_sequence_number());
         min_time = min(min_time, c.min_time());
@@ -184,13 +193,18 @@ pub(crate) async fn compact_parquet_files(
     let (small_cutoff_bytes, large_cutoff_bytes) =
         cutoff_bytes(max_desired_file_size_bytes, percentage_max_file_size);
 
+    println!(" === small_cutoff_bytes: {}", small_cutoff_bytes);
+
     let ctx = exec.new_context(ExecutorType::Reorg);
     let plan = if total_size <= small_cutoff_bytes {
+        println!(" === compact_plan");
         // Compact everything into one file
         ReorgPlanner::new(ctx.child_ctx("ReorgPlanner"))
             .compact_plan(Arc::clone(&merged_schema), query_chunks, sort_key.clone())
             .context(CompactLogicalPlanSnafu)?
     } else {
+        println!(" === compute split_times");
+
         let split_times = if small_cutoff_bytes < total_size && total_size <= large_cutoff_bytes {
             // Split compaction into two files, the earlier of split_percentage amount of
             // max_desired_file_size_bytes, the later of the rest
@@ -205,13 +219,18 @@ pub(crate) async fn compact_parquet_files(
             )
         };
 
+        println!(" === split_times: {:#?}", split_times);
+
         if split_times.is_empty() || (split_times.len() == 1 && split_times[0] == max_time) {
+            println!(" === compact_plan becasue no useful split time");
+
             // The split times might not have actually split anything, so in this case, compact
             // everything into one file
             ReorgPlanner::new(ctx.child_ctx("ReorgPlanner"))
                 .compact_plan(Arc::clone(&merged_schema), query_chunks, sort_key.clone())
                 .context(CompactLogicalPlanSnafu)?
         } else {
+            println!(" === split_plan: {}", split_times.len() + 1);
             // split compact query plan
             ReorgPlanner::new(ctx.child_ctx("ReorgPlanner"))
                 .split_plan(
@@ -290,8 +309,12 @@ pub(crate) async fn compact_parquet_files(
                 // them, and directly upload the resulting Parquet files to
                 // object storage.
                 let (parquet_meta, file_size) = match store.upload(data, &meta).await {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        println!(" === OK in upload");
+                        v
+                    }
                     Err(UploadError::Serialise(CodecError::NoRows)) => {
+                        println!(" === SplitExec produced an empty result stream");
                         // This MAY be a bug.
                         //
                         // This also may happen legitimately, though very, very
@@ -304,7 +327,10 @@ pub(crate) async fn compact_parquet_files(
                         );
                         return Ok(None);
                     }
-                    Err(e) => return Err(Error::Persist { source: e }),
+                    Err(e) => {
+                        println!(" === error in upload: {}", e.to_string());
+                        return Err(Error::Persist { source: e });
+                    }
                 };
 
                 debug!(?partition_id, %object_store_id, "file uploaded to object store");

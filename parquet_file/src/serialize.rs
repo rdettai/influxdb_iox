@@ -127,6 +127,7 @@ where
             // executing the plan, so this code MUST tolerate empty RecordBatch
             // and even entire files.
             warn!("parquet serialisation stream yielded empty record batch");
+            println!("parquet serialisation stream yielded empty record batch");
         } else {
             writer.write(&batch)?;
         }

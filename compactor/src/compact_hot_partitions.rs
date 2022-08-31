@@ -278,9 +278,15 @@ async fn compact_hot_partitions_in_parallel(
             let compaction_result = crate::compact_hot_partition(&comp, p).await;
             match compaction_result {
                 Err(e) => {
+                    println!(
+                        "hot compaction failed: {} - {}",
+                        partition_id,
+                        e.to_string()
+                    );
                     warn!(?e, ?partition_id, "hot compaction failed");
                 }
                 Ok(_) => {
+                    println!("hot compaction complete - {}", partition_id);
                     debug!(?partition_id, "hot compaction complete");
                 }
             };
@@ -289,6 +295,10 @@ async fn compact_hot_partitions_in_parallel(
     }
 
     let compactions_run = handles.len();
+    println!(
+        "Number of hot concurrent partitions are being compacted - {}",
+        compactions_run
+    );
     debug!(
         ?compactions_run,
         "Number of hot concurrent partitions are being compacted"
@@ -305,11 +315,14 @@ mod tests {
         handler::CompactorConfig,
     };
     use backoff::BackoffConfig;
-    use data_types::{ColumnType, ColumnTypeCount, CompactionLevel};
+    use data_types::{ColumnType, ColumnTypeCount, CompactionLevel, PartitionParam};
     use iox_query::exec::Executor;
-    use iox_tests::util::{TestCatalog, TestParquetFileBuilder, TestShard, TestTable};
+    use iox_tests::util::{
+        TestCatalog, TestNamespace, TestParquetFileBuilder, TestShard, TestTable,
+    };
     use iox_time::SystemProvider;
     use parquet_file::storage::ParquetStorage;
+    use schema::sort::SortKey;
     use std::{collections::VecDeque, sync::Arc, time::Duration};
 
     #[tokio::test]
@@ -576,10 +589,83 @@ mod tests {
         assert_eq!(g3_candidate1_pf_ids, vec![6, 5]);
     }
 
+    #[tokio::test]
+    async fn test_compact_hot_partitions_in_parallel() {
+        test_helpers::maybe_start_logging();
+
+        let TestSetup {
+            compactor,
+            shard,
+            table,
+            namespace,
+            ..
+        } = test_setup().await;
+        let table_schema = table.catalog_schema().await;
+        let sort_key = SortKey::from_columns(["tag", "time"]);
+
+        let partition1 = table.with_shard(&shard).create_partition("one").await;
+        let partition1 = partition1.update_sort_key(sort_key.clone()).await;
+
+        let candidate_partition = PartitionCompactionCandidateWithInfo {
+            table: Arc::new(table.table.clone()),
+            table_schema: Arc::new(table_schema),
+            namespace: Arc::new(namespace.namespace.clone()),
+            candidate: PartitionParam {
+                partition_id: partition1.partition.id,
+                shard_id: partition1.partition.shard_id,
+                namespace_id: namespace.namespace.id,
+                table_id: partition1.partition.table_id,
+            },
+            sort_key: partition1.partition.sort_key(),
+            partition_key: partition1.partition.partition_key.clone(),
+        };
+
+        let lp = vec![
+            "test_table,tag=MA field_int=1000i,field_bool=true,field_string=\"abc\" 1",
+            "test_table,tag=CT field_int=1000i,field_bool=true,field_string=\"abc\" 200000000",
+        ]
+        .join("\n");
+
+        let builder = TestParquetFileBuilder::default()
+            .with_line_protocol(&lp)
+            .with_file_size_bytes(3 * 10000) // make 3 times larger than max_desired_file_size_bytes
+            .with_compaction_level(CompactionLevel::Initial)
+            .with_min_time(1)
+            .with_max_time(200000000);
+        let level_0_file = partition1.create_parquet_file(builder).await;
+
+        let filtered_file =
+            FilteredFiles::new(vec![level_0_file.parquet_file], 100, candidate_partition);
+
+        // compact one partition
+        // force this to split the L0 into into 3 files but the middle has no data
+        compact_hot_partitions_in_parallel(Arc::clone(&compactor), vec![filtered_file]).await;
+
+        let files = compactor
+            .catalog
+            .repositories()
+            .await
+            .parquet_files()
+            .list_by_partition_not_to_delete(partition1.partition.id)
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            files[0].compaction_level,
+            CompactionLevel::FileNonOverlapped
+        );
+        assert_eq!(
+            files[1].compaction_level,
+            CompactionLevel::FileNonOverlapped
+        );
+
+        // println!(" files after compaction: {:#?}", files );
+    }
+
     fn make_compactor_config() -> CompactorConfig {
-        let max_desired_file_size_bytes = 100_000_000;
-        let percentage_max_file_size = 90;
-        let split_percentage = 100;
+        let max_desired_file_size_bytes = 10_000;
+        let percentage_max_file_size = 1;
+        let split_percentage = 80;
         let max_cold_concurrent_size_bytes = 90_000;
         let max_number_partitions_per_shard = 100;
         let min_number_recent_ingested_per_partition = 1;
@@ -605,6 +691,7 @@ mod tests {
         compactor: Arc<Compactor>,
         shard: Arc<TestShard>,
         table: Arc<TestTable>,
+        namespace: Arc<TestNamespace>,
     }
 
     async fn test_setup() -> TestSetup {
@@ -646,6 +733,7 @@ mod tests {
             compactor,
             shard,
             table,
+            namespace,
         }
     }
 }
