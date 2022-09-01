@@ -48,10 +48,7 @@ fn on_expression(i: &str) -> IResult<&str, OnExpression> {
             value(OnExpression::AllDatabasesAndRetentionPolicies, tag("*.*")),
             value(OnExpression::AllDatabases, tag("*")),
             map(
-                pair(
-                    opt(terminated(identifier, tag("."))),
-                    identifier,
-                ),
+                pair(opt(terminated(identifier, tag("."))), identifier),
                 |tup| match tup {
                     (None, db) => OnExpression::Database(db),
                     (Some(db), rp) => OnExpression::DatabaseRetentionPolicy(db, rp),

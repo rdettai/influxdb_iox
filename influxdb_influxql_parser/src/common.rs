@@ -64,13 +64,9 @@ pub fn measurement_name_expression(i: &str) -> IResult<&str, MeasurementNameExpr
                 |(db, rp)| (Some(db), Some(rp)),
             ),
             // database ".."
-            map(terminated(identifier, tag("..")), |db| {
-                (Some(db), None)
-            }),
+            map(terminated(identifier, tag("..")), |db| (Some(db), None)),
             // retention_policy "."
-            map(terminated(identifier, tag(".")), |rp| {
-                (None, Some(rp))
-            }),
+            map(terminated(identifier, tag(".")), |rp| (None, Some(rp))),
         ))),
         identifier,
     )(i)?;
@@ -169,10 +165,10 @@ mod tests {
         assert_eq!(got, 123);
 
         // not digits
-        assert!(limit_clause("LIMIT sdf").is_err());
+        limit_clause("LIMIT sdf").unwrap_err();
 
         // overflow
-        assert!(limit_clause("LIMIT 34593745733489743985734857394").is_err());
+        limit_clause("LIMIT 34593745733489743985734857394").unwrap_err();
     }
 
     #[test]
@@ -189,9 +185,9 @@ mod tests {
         assert_eq!(got, 123);
 
         // not digits
-        assert!(offset_clause("OFFSET sdf").is_err());
+        offset_clause("OFFSET sdf").unwrap_err();
 
         // overflow
-        assert!(offset_clause("OFFSET 34593745733489743985734857394").is_err());
+        offset_clause("OFFSET 34593745733489743985734857394").unwrap_err();
     }
 }
