@@ -4,7 +4,7 @@ use crate::{
     compact::{Compactor, PartitionCompactionCandidateWithInfo},
     parquet_file_combining,
     parquet_file_filtering::{filter_hot_parquet_files, FilterResult, FilteredFiles},
-    parquet_file_lookup,
+    parquet_file_lookup::{self, ParquetFilesForCompaction},
 };
 use backoff::Backoff;
 use data_types::{ColumnTypeCount, TableId};
@@ -93,6 +93,20 @@ pub async fn compact_hot_partitions(compactor: Arc<Compactor>) -> usize {
     compact_candidates_with_memory_budget(
         Arc::clone(&compactor),
         "hot",
+        |compactor: Arc<Compactor>,
+         partition: PartitionCompactionCandidateWithInfo,
+         parquet_files_for_compaction: ParquetFilesForCompaction,
+         remaining_budget_bytes: u64,
+         columns: &[ColumnTypeCount]| {
+            filter_hot_parquet_files(
+                partition,
+                parquet_files_for_compaction,
+                remaining_budget_bytes,
+                columns,
+                &compactor.parquet_file_candidate_gauge,
+                &compactor.parquet_file_candidate_bytes,
+            )
+        },
         compact_hot_partitions_in_parallel,
         candidates,
         table_columns,
@@ -124,15 +138,26 @@ pub async fn compact_hot_partitions(compactor: Arc<Compactor>) -> usize {
 // If the partial remaining budget isn't enough to compact the current partition but the full
 // budget is enough, the current partition will be pushed back as the last item of the list to be
 // considered later with a full memory budget.
-async fn compact_candidates_with_memory_budget<F, Fut>(
+async fn compact_candidates_with_memory_budget<C, Fut, F>(
     compactor: Arc<Compactor>,
     compaction_type: &str,
-    compact_function: F,
+    filter_function: F,
+    compact_function: C,
     mut candidates: VecDeque<PartitionCompactionCandidateWithInfo>,
     table_columns: HashMap<TableId, Vec<ColumnTypeCount>>,
 ) where
-    F: Fn(Arc<Compactor>, Vec<FilteredFiles>) -> Fut + Send + Sync + 'static,
+    C: Fn(Arc<Compactor>, Vec<FilteredFiles>) -> Fut + Send + Sync + 'static,
     Fut: futures::Future<Output = ()> + Send,
+    F: Fn(
+            Arc<Compactor>,
+            PartitionCompactionCandidateWithInfo,
+            ParquetFilesForCompaction,
+            u64,
+            &[ColumnTypeCount],
+        ) -> FilteredFiles
+        + Send
+        + Sync
+        + 'static,
 {
     let mut remaining_budget_bytes = compactor.config.memory_budget_bytes();
     let mut parallel_compacting_candidates = Vec::with_capacity(candidates.len());
@@ -200,13 +225,12 @@ async fn compact_candidates_with_memory_budget<F, Fut>(
                     Ok(parquet_files_for_compaction) => {
                         // Return only files under the remaining_budget_bytes that should be
                         // compacted
-                        let to_compact = filter_hot_parquet_files(
+                        let to_compact = filter_function(
+                            Arc::clone(&compactor),
                             partition.clone(),
                             parquet_files_for_compaction,
                             remaining_budget_bytes,
                             columns,
-                            &compactor.parquet_file_candidate_gauge,
-                            &compactor.parquet_file_candidate_bytes,
                         );
                         Some(to_compact)
                     }
@@ -404,6 +428,20 @@ mod tests {
         compact_candidates_with_memory_budget(
             Arc::clone(&compactor),
             "hot",
+            |compactor: Arc<Compactor>,
+             partition: PartitionCompactionCandidateWithInfo,
+             parquet_files_for_compaction: ParquetFilesForCompaction,
+             remaining_budget_bytes: u64,
+             columns: &[ColumnTypeCount]| {
+                filter_hot_parquet_files(
+                    partition,
+                    parquet_files_for_compaction,
+                    remaining_budget_bytes,
+                    columns,
+                    &compactor.parquet_file_candidate_gauge,
+                    &compactor.parquet_file_candidate_bytes,
+                )
+            },
             mock_compactor.compaction_function(),
             sorted_candidates,
             table_columns,
@@ -464,6 +502,20 @@ mod tests {
         compact_candidates_with_memory_budget(
             Arc::clone(&compactor),
             "hot",
+            |compactor: Arc<Compactor>,
+             partition: PartitionCompactionCandidateWithInfo,
+             parquet_files_for_compaction: ParquetFilesForCompaction,
+             remaining_budget_bytes: u64,
+             columns: &[ColumnTypeCount]| {
+                filter_hot_parquet_files(
+                    partition,
+                    parquet_files_for_compaction,
+                    remaining_budget_bytes,
+                    columns,
+                    &compactor.parquet_file_candidate_gauge,
+                    &compactor.parquet_file_candidate_bytes,
+                )
+            },
             mock_compactor.compaction_function(),
             sorted_candidates,
             table_columns,
@@ -665,6 +717,20 @@ mod tests {
         compact_candidates_with_memory_budget(
             Arc::clone(&compactor),
             "hot",
+            |compactor: Arc<Compactor>,
+             partition: PartitionCompactionCandidateWithInfo,
+             parquet_files_for_compaction: ParquetFilesForCompaction,
+             remaining_budget_bytes: u64,
+             columns: &[ColumnTypeCount]| {
+                filter_hot_parquet_files(
+                    partition,
+                    parquet_files_for_compaction,
+                    remaining_budget_bytes,
+                    columns,
+                    &compactor.parquet_file_candidate_gauge,
+                    &compactor.parquet_file_candidate_bytes,
+                )
+            },
             mock_compactor.compaction_function(),
             sorted_candidates,
             table_columns,
