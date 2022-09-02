@@ -1,11 +1,12 @@
 #![allow(dead_code)]
 
-use crate::identifier::{identifier, Identifier};
+use crate::expression::{conditional_expression, Expr};
+use crate::identifier::{identifier, unquoted_identifier, Identifier};
 use core::fmt;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case};
 use nom::character::complete::{digit1, line_ending, multispace0, multispace1};
-use nom::combinator::{eof, map, map_res, opt};
+use nom::combinator::{eof, map, map_res, opt, value, verify};
 use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::IResult;
 use std::fmt::Formatter;
@@ -87,27 +88,98 @@ pub fn measurement_name_expression(i: &str) -> IResult<&str, MeasurementNameExpr
     ))
 }
 
-// Parse an unsigned integer.
+/// Parse an unsigned integer.
 pub fn unsigned_number(i: &str) -> IResult<&str, u64> {
     map_res(digit1, |s: &str| s.parse())(i)
 }
 
-// Parse a LIMIT <n> clause.
+/// Parse a LIMIT <n> clause.
 pub fn limit_clause(i: &str) -> IResult<&str, u64> {
     preceded(pair(tag_no_case("LIMIT"), multispace1), unsigned_number)(i)
 }
 
-// Parse an OFFSET <n> clause.
+/// Parse an OFFSET <n> clause.
 pub fn offset_clause(i: &str) -> IResult<&str, u64> {
     preceded(pair(tag_no_case("OFFSET"), multispace1), unsigned_number)(i)
 }
 
-// Parse a terminator that ends a SQL statement.
+/// Parse a terminator that ends a SQL statement.
 pub fn statement_terminator(i: &str) -> IResult<&str, ()> {
     let (remaining_input, _) =
         delimited(multispace0, alt((tag(";"), line_ending, eof)), multispace0)(i)?;
 
     Ok((remaining_input, ()))
+}
+
+pub(crate) fn where_clause(i: &str) -> IResult<&str, Expr> {
+    preceded(
+        pair(tag_no_case("WHERE"), multispace1),
+        conditional_expression,
+    )(i)
+}
+
+/// Represents an InfluxQL `ORDER BY` clause.
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
+pub enum OrderByClause {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+/// Parse an InfluxQL `ORDER BY` clause.
+///
+/// An `ORDER BY` in InfluxQL is limited when compared to the equivalent
+/// SQL definition. It is defined by the following [EBNF] notation:
+///
+/// ```text
+/// order_by   ::= "ORDER" "BY" (time_order | order)
+/// order      ::= "ASC | "DESC
+/// time_order ::= "TIME" order?
+/// ```
+///
+/// Resulting in the following valid strings:
+///
+/// ```text
+/// ORDER BY ASC
+/// ORDER BY DESC
+/// ORDER BY time
+/// ORDER BY time ASC
+/// ORDER BY time DESC
+/// ```
+///
+/// [EBNF]: https://www.w3.org/TR/2010/REC-xquery-20101214/#EBNFNotation
+pub(crate) fn order_by_clause(i: &str) -> IResult<&str, OrderByClause> {
+    let order = || {
+        preceded(
+            multispace1,
+            alt((
+                value(OrderByClause::Ascending, tag_no_case("ASC")),
+                value(OrderByClause::Descending, tag_no_case("DESC")),
+            )),
+        )
+    };
+
+    preceded(
+        // "ORDER" "BY"
+        pair(
+            tag_no_case("ORDER"),
+            preceded(multispace1, tag_no_case("BY")),
+        ),
+        alt((
+            // "ASC" | "DESC"
+            order(),
+            // "TIME" ( "ASC" | "DESC" )?
+            map(
+                preceded(
+                    verify(preceded(multispace1, unquoted_identifier), |id: &str| {
+                        id.to_lowercase() == "time"
+                    }),
+                    opt(order()),
+                ),
+                Option::<_>::unwrap_or_default,
+            ),
+        )),
+    )(i)
 }
 
 #[cfg(test)]
@@ -189,5 +261,36 @@ mod tests {
 
         // overflow
         offset_clause("OFFSET 34593745733489743985734857394").unwrap_err();
+    }
+
+    #[test]
+    fn test_order_by() {
+        use OrderByClause::*;
+
+        let (_, got) = order_by_clause("ORDER by asc").unwrap();
+        assert_eq!(got, Ascending);
+
+        let (_, got) = order_by_clause("ORDER by desc").unwrap();
+        assert_eq!(got, Descending);
+
+        let (_, got) = order_by_clause("ORDER by time asc").unwrap();
+        assert_eq!(got, Ascending);
+
+        let (_, got) = order_by_clause("ORDER by time desc").unwrap();
+        assert_eq!(got, Descending);
+
+        // default case is ascending
+        let (_, got) = order_by_clause("ORDER by time").unwrap();
+        assert_eq!(got, Ascending);
+
+        // does not consume remaining input
+        let (i, got) = order_by_clause("ORDER by time LIMIT 10").unwrap();
+        assert_eq!(got, Ascending);
+        assert_eq!(i, " LIMIT 10");
+
+        // Fallible cases
+
+        // Must be "time" identifier
+        order_by_clause("ORDER by foo").unwrap_err();
     }
 }

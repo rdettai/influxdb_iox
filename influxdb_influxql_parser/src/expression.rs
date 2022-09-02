@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::identifier::unquoted_identifier;
 use crate::literal::literal_regex;
 use crate::{
     identifier::{identifier, Identifier},
@@ -10,8 +11,8 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case};
 use nom::character::complete::{char, multispace0};
 use nom::combinator::{cut, map, value};
-use nom::multi::many0;
-use nom::sequence::{delimited, preceded, tuple};
+use nom::multi::{many0, separated_list0};
+use nom::sequence::{delimited, preceded, separated_pair, tuple};
 use nom::IResult;
 use std::fmt::{Display, Formatter, Write};
 
@@ -29,6 +30,12 @@ pub enum Expr {
 
     /// Unary operation such as + 5 or - 1h3m
     UnaryOp(UnaryOperator, Box<Expr>),
+
+    /// Function call
+    Call {
+        name: String,
+        args: Option<Vec<Expr>>,
+    },
 
     /// Binary operations, such as the
     /// conditional foo = 'bar' or the arithmetic 1 + 2 expressions.
@@ -75,6 +82,20 @@ impl Display for Expr {
             Self::UnaryOp(op, e) => write!(f, "{}{}", op, e)?,
             Self::BinaryOp { lhs, op, rhs } => write!(f, "{} {} {}", lhs, op, rhs)?,
             Self::Nested(e) => write!(f, "({})", e)?,
+            Self::Call { name, args } => {
+                write!(f, "{}(", name)?;
+                match args {
+                    Some(args) if !args.is_empty() => {
+                        let args = args.as_slice();
+                        write!(f, "{}", args[0])?;
+                        for arg in &args[1..] {
+                            write!(f, ", {}", arg)?;
+                        }
+                    }
+                    _ => {}
+                }
+                write!(f, ")")?;
+            }
         }
 
         Ok(())
@@ -172,6 +193,23 @@ fn parens(i: &str) -> IResult<&str, Expr> {
         preceded(multispace0, char('(')),
         map(conditional_expression, |e| Expr::Nested(e.into())),
         preceded(multispace0, char(')')),
+    )(i)
+}
+
+fn call(i: &str) -> IResult<&str, Expr> {
+    map(
+        separated_pair(
+            unquoted_identifier,
+            multispace0,
+            delimited(char('('), separated_list0(char(','), arithmetic), char(')')),
+        ),
+        |(name, args)| match args.is_empty() {
+            true => Expr::Call { name, args: None },
+            false => Expr::Call {
+                name,
+                args: Some(args),
+            },
+        },
     )(i)
 }
 
@@ -564,5 +602,20 @@ mod test {
 
         // can't parse literal regular expressions as part of an arithmetic expression
         assert_failure!(conditional_expression(r#""foo" + /^(no|match)$/"#));
+    }
+
+    #[test]
+    fn test_call() {
+        let (_, ex) = call("now()").unwrap();
+        let got = format!("{}", ex);
+        assert_eq!(got, "now()");
+
+        let (_, ex) = call("now ( 1 )").unwrap();
+        let got = format!("{}", ex);
+        assert_eq!(got, "now(1)");
+
+        let (_, ex) = call("now ( 1,2 )").unwrap();
+        let got = format!("{}", ex);
+        assert_eq!(got, "now(1, 2)");
     }
 }

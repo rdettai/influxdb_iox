@@ -6,7 +6,7 @@
 
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case};
-use nom::character::complete::multispace1;
+use nom::character::complete::{char, multispace1};
 use nom::combinator::{map, opt, value};
 use nom::sequence::{pair, preceded, terminated};
 use nom::{sequence::tuple, IResult};
@@ -14,10 +14,12 @@ use std::fmt;
 use std::fmt::Formatter;
 
 use crate::common::{
-    limit_clause, measurement_name_expression, offset_clause, statement_terminator,
+    limit_clause, measurement_name_expression, offset_clause, statement_terminator, where_clause,
     MeasurementNameExpression,
 };
+use crate::expression::Expr;
 use crate::identifier::{identifier, Identifier};
+use crate::string::{regex, Regex};
 
 /// OnExpression represents an InfluxQL database or retention policy name
 /// or a wildcard.
@@ -58,10 +60,11 @@ fn on_expression(i: &str) -> IResult<&str, OnExpression> {
     )(i)
 }
 
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShowMeasurementsStatement {
     pub on_expression: Option<OnExpression>,
     pub measurement_expression: Option<MeasurementExpression>,
+    pub condition: Option<Expr>,
     pub limit: Option<u64>,
     pub offset: Option<u64>,
 }
@@ -78,6 +81,10 @@ impl fmt::Display for ShowMeasurementsStatement {
             write!(f, " WITH MEASUREMENT {}", expr)?;
         }
 
+        if let Some(ref cond) = self.condition {
+            write!(f, " WHERE {}", cond)?;
+        }
+
         if let Some(limit) = self.limit {
             write!(f, " LIMIT {}", limit)?;
         }
@@ -90,16 +97,17 @@ impl fmt::Display for ShowMeasurementsStatement {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MeasurementExpression {
     Equals(MeasurementNameExpression),
-    // TODO(sgc): Add regex
+    Regex(Regex),
 }
 
 impl fmt::Display for MeasurementExpression {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Equals(ref name) => write!(f, "= {}", name)?,
+            Self::Regex(ref re) => write!(f, "=~ {}", re)?,
         };
 
         Ok(())
@@ -113,11 +121,16 @@ fn with_measurement_expression(i: &str) -> IResult<&str, MeasurementExpression> 
             multispace1,
             tag_no_case("measurement"),
             multispace1,
-            // TODO(sgc): parse equality or regular expression
-            tag("="),
-            multispace1,
         )),
-        map(measurement_name_expression, MeasurementExpression::Equals),
+        alt((
+            map(
+                tuple((char('='), multispace1, measurement_name_expression)),
+                |(_, _, name)| MeasurementExpression::Equals(name),
+            ),
+            map(tuple((tag("=~"), multispace1, regex)), |(_, _, regex)| {
+                MeasurementExpression::Regex(regex)
+            }),
+        )),
     )(i)
 }
 
@@ -130,6 +143,7 @@ pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
             _, // "MEASUREMENTS"
             on_expression,
             measurement_expression,
+            condition,
             limit,
             offset,
             _, // ";"
@@ -140,6 +154,7 @@ pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
         tag_no_case("measurements"),
         opt(preceded(multispace1, on_expression)),
         opt(preceded(multispace1, with_measurement_expression)),
+        opt(preceded(multispace1, where_clause)),
         opt(preceded(multispace1, limit_clause)),
         opt(preceded(multispace1, offset_clause)),
         statement_terminator,
@@ -150,6 +165,7 @@ pub fn show_measurements(i: &str) -> IResult<&str, ShowMeasurementsStatement> {
         ShowMeasurementsStatement {
             on_expression,
             measurement_expression,
+            condition,
             limit,
             offset,
         },
@@ -181,7 +197,7 @@ mod test {
         );
 
         let (_, got) = show_measurements(
-            "SHOW  MEASUREMENTS  ON  foo  WITH  MEASUREMENT  =  bar LIMIT 10 OFFSET 20;",
+            "SHOW\nMEASUREMENTS\tON  foo  WITH  MEASUREMENT\n=  bar WHERE\ntrue LIMIT 10 OFFSET 20;",
         )
         .unwrap();
         assert_eq!(
@@ -195,13 +211,33 @@ mod test {
                         name: Identifier::Unquoted("bar".into()),
                     }
                 )),
+                condition: Some(Expr::Literal(true.into())),
                 limit: Some(10),
                 offset: Some(20)
             },
         );
         assert_eq!(
             got.to_string(),
-            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT = bar LIMIT 10 OFFSET 20"
+            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT = bar WHERE true LIMIT 10 OFFSET 20"
+        );
+
+        let (_, got) = show_measurements(
+            "SHOW\nMEASUREMENTS\tON  foo  WITH  MEASUREMENT\n=~ /bar/ WHERE\ntrue;",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            ShowMeasurementsStatement {
+                on_expression: Some(OnExpression::Database(Identifier::Unquoted("foo".into()))),
+                measurement_expression: Some(MeasurementExpression::Regex(Regex("bar".into()))),
+                condition: Some(Expr::Literal(true.into())),
+                limit: None,
+                offset: None
+            },
+        );
+        assert_eq!(
+            got.to_string(),
+            "SHOW MEASUREMENTS ON foo WITH MEASUREMENT =~ /bar/ WHERE true"
         );
     }
 
@@ -274,5 +310,21 @@ mod test {
             got,
             OnExpression::AllDatabasesAndRetentionPolicies
         ));
+    }
+
+    #[test]
+    fn test_with_measurement() {
+        let (_, got) = with_measurement_expression("WITH measurement = foo").unwrap();
+        assert_eq!(
+            got,
+            MeasurementExpression::Equals(MeasurementNameExpression {
+                database: None,
+                retention_policy: None,
+                name: Identifier::Unquoted("foo".into())
+            })
+        );
+
+        let (_, got) = with_measurement_expression("WITH measurement =~ /foo/").unwrap();
+        assert_eq!(got, MeasurementExpression::Regex(Regex("foo".into())));
     }
 }
